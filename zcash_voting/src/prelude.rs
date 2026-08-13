@@ -10,18 +10,14 @@ pub use crate::confirmation::{
 };
 pub use crate::delegate::gather_delegation_lwd_inputs;
 pub use crate::delegate::LightwalletdBranchIdProvider;
+pub use crate::delegate::PreparedDelegationBundle;
 pub use crate::delegate::{
-    branch_id_for_height, display_memo, load_account_keys, pczt_sighash, record_submission,
-    record_van_position, setup as setup_delegation, signing_request as delegation_signing_request,
-    spend_auth_signature, submission as delegation_submission, BranchIdProvider,
-    DelegationAccountKeys, DelegationKeys, DelegationPhase, DelegationProgress, DelegationProof,
-    DelegationSetup, DelegationSigner, DelegationSigningRequest, DelegationSubmission,
-    KeystoneSigningRequest, PreparedDelegationReport, PreparedSigner, SignedDelegationBundle,
-};
-pub use crate::delegate::{
-    prepare_delegation_bundle, prepare_delegation_bundle_for_target,
-    PrepareDelegationBundleForTargetParams, PrepareDelegationBundleParams,
-    PreparedDelegationBundle,
+    branch_id_for_height, display_memo, pczt_sighash, record_submission, record_van_position,
+    setup as setup_delegation, signing_request as delegation_signing_request, spend_auth_signature,
+    submission as delegation_submission, BranchIdProvider, DelegationAccountKeys, DelegationKeys,
+    DelegationPhase, DelegationProgress, DelegationProof, DelegationSetup, DelegationSigner,
+    DelegationSigningRequest, DelegationSubmission, KeystoneSigningRequest,
+    PreparedDelegationReport, PreparedSigner, SignedDelegationBundle,
 };
 pub use crate::delegation_capability::{
     export_delegation_capability, import_delegation_capability, DelegationCapabilityBundleV1,
@@ -44,9 +40,7 @@ pub use crate::phases::{SharePhase, VotePhase, WorkflowPhase};
 pub use crate::pir::{
     connect_pir, connect_pir_blocking, negotiated_pir_layout, select_pir_endpoint, PirEndpoint,
 };
-pub use crate::precompute::{
-    note_witnesses, stored_note_witnesses, verify_witness, PirPrecomputeReport,
-};
+pub use crate::precompute::{verify_witness, PirPrecomputeReport};
 pub use crate::recovery::{
     clear as clear_recovery, recoverable_commitment_bundle, round_snapshot, DelegationRecovery,
     RecoverableCommitmentBundle, RoundRecoverySnapshot, ShareWorkflow, VoteRecovery,
@@ -55,11 +49,6 @@ pub use crate::round::{
     bundle_notes_for_index, bundle_notes_for_index_with_policy, delegation_round_name,
     note_bundles, note_bundles_with_policy, quantized_bundle_set_weight, quantized_bundle_weight,
     raw_bundle_weight, validate_bundle_index, BundleLayout, RoundInfo, RoundParams, VotingDb,
-};
-pub use crate::selection::select_notes_with_lwd;
-pub use crate::selection::{
-    gather_delegation_wallet_inputs, select_notes_with_wallet_db, select_snapshot_note_infos,
-    select_snapshot_notes, DelegationWalletInputs, GatherDelegationWalletParams,
 };
 pub use crate::session::{
     resume_plan, CompletedVoteChoice, CompletedVoteDisplay, Decision, DelegationRecoveryWork,

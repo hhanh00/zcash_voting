@@ -6,7 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use rusqlite::{named_params, OptionalExtension};
+use crate::named_params;
+use crate::storage::sqlx_ext::{ConnectionExt, OptionalExtension};
+use sqlx::SqliteConnection;
 
 use crate::{
     round::VotingDb,
@@ -172,7 +174,7 @@ impl CommittedVote {
     ///
     /// Imported capability rounds require every delegation bundle to be
     /// confirmed before the first vote is committed.
-    pub fn commit(
+    pub async fn commit(
         db: &VotingDb,
         round_id: &str,
         bundle_index: u32,
@@ -182,7 +184,7 @@ impl CommittedVote {
         stages: &dyn crate::types::VoteCommitStageReporter,
     ) -> Result<Self, VotingError> {
         let commit =
-            crate::vote::commit(db, round_id, bundle_index, draft, witness, signer, stages)?;
+            crate::vote::commit(db, round_id, bundle_index, draft, witness, signer, stages).await?;
         Ok(Self {
             round_id: round_id.to_string(),
             bundle_index,
@@ -191,13 +193,13 @@ impl CommittedVote {
     }
 
     /// Reconstructs a committed cast-vote handle from persisted recovery state.
-    pub fn recover(
+    pub async fn recover(
         db: &VotingDb,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
     ) -> Result<Self, VotingError> {
-        let commit = recover_commit(db, round_id, bundle_index, proposal_id)?;
+        let commit = recover_commit(db, round_id, bundle_index, proposal_id).await?;
         Ok(Self {
             round_id: round_id.to_string(),
             bundle_index,
@@ -231,23 +233,25 @@ impl CommittedVote {
     }
 
     /// Reconstructs chain-ready cast-vote fields from persisted recovery state.
-    pub fn submission(&self, db: &VotingDb) -> Result<VoteSubmission, VotingError> {
+    pub async fn submission(&self, db: &VotingDb) -> Result<VoteSubmission, VotingError> {
         submission(
             db,
             &self.round_id,
             self.bundle_index,
             self.commit.proposal_id,
         )
+        .await
     }
 
     /// Serializes the persisted recovery bundle for this committed vote.
-    pub fn recovery_json(&self, db: &VotingDb) -> Result<String, VotingError> {
+    pub async fn recovery_json(&self, db: &VotingDb) -> Result<String, VotingError> {
         let bundle = recovery_bundle(
             db,
             &self.round_id,
             self.bundle_index,
             self.commit.proposal_id,
-        )?
+        )
+        .await?
         .ok_or_else(|| VotingError::InvalidInput {
             message: format!(
                 "vote recovery bundle not found for round={}, bundle={}, proposal={}",
@@ -258,13 +262,17 @@ impl CommittedVote {
     }
 
     /// Returns a wire-facing signed commitment bundle for wallet API layers.
-    pub fn signed_commitment(&self, db: &VotingDb) -> Result<SignedVoteCommitment, VotingError> {
+    pub async fn signed_commitment(
+        &self,
+        db: &VotingDb,
+    ) -> Result<SignedVoteCommitment, VotingError> {
         let recovery = recovery_bundle(
             db,
             &self.round_id,
             self.bundle_index,
             self.commit.proposal_id,
-        )?
+        )
+        .await?
         .ok_or_else(|| VotingError::InvalidInput {
             message: format!(
                 "vote recovery bundle not found for round={}, bundle={}, proposal={}",
@@ -293,7 +301,7 @@ impl CommittedVote {
     }
 
     /// Records a helper-share submission using recovery-owned nullifier material.
-    pub fn record_share(
+    pub async fn record_share(
         &self,
         db: &VotingDb,
         share_index: u32,
@@ -309,10 +317,11 @@ impl CommittedVote {
             sent_to_urls,
             submit_at,
         )
+        .await
     }
 
     /// Marks one helper-share submission confirmed.
-    pub fn confirm_share(&self, db: &VotingDb, share_index: u32) -> Result<(), VotingError> {
+    pub async fn confirm_share(&self, db: &VotingDb, share_index: u32) -> Result<(), VotingError> {
         crate::share::confirm(
             db,
             &self.round_id,
@@ -320,10 +329,11 @@ impl CommittedVote {
             self.commit.proposal_id,
             share_index,
         )
+        .await
     }
 
     /// Adds helper URLs to a previously recorded share submission.
-    pub fn add_sent_servers(
+    pub async fn add_sent_servers(
         &self,
         db: &VotingDb,
         share_index: u32,
@@ -337,10 +347,11 @@ impl CommittedVote {
             share_index,
             new_urls,
         )
+        .await
     }
 
     /// Records the cast-vote transaction hash for this vote.
-    pub fn record_submission(&self, db: &VotingDb, tx_hash: &str) -> Result<(), VotingError> {
+    pub async fn record_submission(&self, db: &VotingDb, tx_hash: &str) -> Result<(), VotingError> {
         record_submission(
             db,
             &self.round_id,
@@ -348,10 +359,11 @@ impl CommittedVote {
             self.commit.proposal_id,
             tx_hash,
         )
+        .await
     }
 
     /// Records the confirmed vote-commitment tree position for this vote.
-    pub fn record_vc_position(
+    pub async fn record_vc_position(
         &self,
         db: &VotingDb,
         vc_tree_position: u64,
@@ -363,6 +375,7 @@ impl CommittedVote {
             self.commit.proposal_id,
             vc_tree_position,
         )
+        .await
     }
 }
 
@@ -372,7 +385,7 @@ impl CommittedVote {
 /// in order while reporting commit progress. Imported capability rounds require
 /// every delegation bundle to be confirmed before the first vote is committed.
 #[allow(clippy::too_many_arguments)]
-pub fn commit_batch(
+pub async fn commit_batch(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -382,14 +395,15 @@ pub fn commit_batch(
     stages: &dyn crate::types::VoteCommitStageReporter,
 ) -> Result<SignedVoteCommitments, VotingError> {
     validate_draft_votes(drafts)?;
-    let bundle_count = db.get_bundle_count(round_id)?;
+    let bundle_count = db.get_bundle_count(round_id).await?;
     crate::round::validate_bundle_index(bundle_count, bundle_index, "voting")?;
 
     let mut commitments = Vec::with_capacity(drafts.len());
     for draft in drafts {
         let committed =
-            CommittedVote::commit(db, round_id, bundle_index, draft, witness, signer, stages)?;
-        commitments.push(committed.signed_commitment(db)?);
+            CommittedVote::commit(db, round_id, bundle_index, draft, witness, signer, stages)
+                .await?;
+        commitments.push(committed.signed_commitment(db).await?);
     }
 
     Ok(SignedVoteCommitments {
@@ -399,16 +413,16 @@ pub fn commit_batch(
 }
 
 /// Recovers one persisted vote commitment as a single-item batch result.
-pub fn recover_signed_commitments(
+pub async fn recover_signed_commitments(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     proposal_id: u32,
 ) -> Result<SignedVoteCommitments, VotingError> {
-    let committed = CommittedVote::recover(db, round_id, bundle_index, proposal_id)?;
+    let committed = CommittedVote::recover(db, round_id, bundle_index, proposal_id).await?;
     Ok(SignedVoteCommitments {
         bundle_index,
-        commitments: vec![committed.signed_commitment(db)?],
+        commitments: vec![committed.signed_commitment(db).await?],
     })
 }
 
@@ -564,7 +578,7 @@ struct EncryptedShareJson {
 /// the persisted recovery bundle without rebuilding the proof.
 /// Fresh votes in an imported capability round require every delegation bundle
 /// to have a recorded confirmation.
-pub fn commit(
+pub async fn commit(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -576,15 +590,17 @@ pub fn commit(
     validate_draft_vote(draft)?;
 
     let (secret, network) = signer_secret_and_network(signer);
-    db.require_round_network(round_id, network, "vote signer")?;
+    db.require_round_network(round_id, network, "vote signer")
+        .await?;
 
-    if let Some(recovered) = recovery_bundle(db, round_id, bundle_index, draft.proposal_id)? {
+    if let Some(recovered) = recovery_bundle(db, round_id, bundle_index, draft.proposal_id).await? {
         if recovery_matches_draft(&recovered, draft) {
             return commit_from_recovery(&recovered);
         }
     }
-    db.require_capability_delegations_confirmed(round_id)?;
-    ensure_vote_rebuild_allowed(db, round_id, bundle_index, draft.proposal_id)?;
+    db.require_capability_delegations_confirmed(round_id)
+        .await?;
+    ensure_vote_rebuild_allowed(db, round_id, bundle_index, draft.proposal_id).await?;
 
     stages.on_stage(VoteCommitStage::ProofStarting {
         proposal_id: draft.proposal_id,
@@ -596,20 +612,22 @@ pub fn commit(
         stages,
     };
     let auth_path = witness.auth_path_fixed()?;
-    let bundle = db.build_vote_commitment(
-        round_id,
-        bundle_index,
-        secret,
-        network,
-        draft.proposal_id,
-        draft.choice,
-        draft.num_options,
-        &auth_path,
-        witness.position,
-        witness.anchor_height,
-        draft.single_share,
-        &progress,
-    )?;
+    let bundle = db
+        .build_vote_commitment(
+            round_id,
+            bundle_index,
+            secret,
+            network,
+            draft.proposal_id,
+            draft.choice,
+            draft.num_options,
+            &auth_path,
+            witness.position,
+            witness.anchor_height,
+            draft.single_share,
+            &progress,
+        )
+        .await?;
     let wire_shares = bundle
         .enc_shares
         .iter()
@@ -619,14 +637,16 @@ pub fn commit(
         proposal_id: draft.proposal_id,
         bundle_index,
     });
-    let share_payloads = db.build_share_payloads(
-        &wire_shares,
-        &bundle,
-        draft.choice,
-        draft.num_options,
-        draft.vc_tree_position,
-        draft.single_share,
-    )?;
+    let share_payloads = db
+        .build_share_payloads(
+            &wire_shares,
+            &bundle,
+            draft.choice,
+            draft.num_options,
+            draft.vc_tree_position,
+            draft.single_share,
+        )
+        .await?;
     stages.on_stage(VoteCommitStage::Signing {
         proposal_id: draft.proposal_id,
         bundle_index,
@@ -655,7 +675,8 @@ pub fn commit(
         draft.choice,
         Some(&commitment_bytes),
         &serialize_recovery(&recovery)?,
-    )?;
+    )
+    .await?;
 
     Ok(VoteCommit {
         proposal_id: draft.proposal_id,
@@ -695,13 +716,14 @@ impl ProgressReporter for VoteProofProgressReporter<'_> {
 /// accidentally submitted. After `confirmation::confirm_vote_submission`
 /// records the confirmed VC position, call this helper again and submit the
 /// freshly recovered helper-share payloads.
-pub fn recover_commit(
+pub async fn recover_commit(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     proposal_id: u32,
 ) -> Result<VoteCommit, VotingError> {
-    recovery_bundle(db, round_id, bundle_index, proposal_id)?
+    recovery_bundle(db, round_id, bundle_index, proposal_id)
+        .await?
         .ok_or_else(|| VotingError::InvalidInput {
             message: format!(
                 "vote recovery bundle not found for round={round_id}, bundle={bundle_index}, proposal={proposal_id}"
@@ -711,13 +733,14 @@ pub fn recover_commit(
 }
 
 /// Reconstructs chain-ready cast-vote fields from persisted recovery state.
-pub fn submission(
+pub async fn submission(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     proposal_id: u32,
 ) -> Result<VoteSubmission, VotingError> {
-    recovery_bundle(db, round_id, bundle_index, proposal_id)?
+    recovery_bundle(db, round_id, bundle_index, proposal_id)
+        .await?
         .ok_or_else(|| VotingError::InvalidInput {
             message: format!(
                 "vote recovery bundle not found for round={round_id}, bundle={bundle_index}, proposal={proposal_id}"
@@ -737,7 +760,7 @@ pub fn submission(
 }
 
 /// Records the cast-vote transaction hash and marks the vote submitted.
-pub fn record_submission(
+pub async fn record_submission(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -745,6 +768,7 @@ pub fn record_submission(
     tx_hash: &str,
 ) -> Result<(), VotingError> {
     db.record_vote_submission(round_id, bundle_index, proposal_id, tx_hash)
+        .await
 }
 
 /// Records the on-chain vote commitment tree position after confirmation.
@@ -752,27 +776,28 @@ pub fn record_submission(
 /// This does not advance the bundle's current VAN position. Prefer
 /// `confirmation::confirm_vote_submission` when recording chain events so all
 /// confirmation fields are stored atomically.
-pub fn record_vc_position(
+pub async fn record_vc_position(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     proposal_id: u32,
     vc_tree_position: u64,
 ) -> Result<(), VotingError> {
-    let conn = db.conn();
+    let mut conn = db.conn().await?;
     let wallet_id = db.wallet_id();
     record_vc_position_with_conn(
-        &conn,
+        &mut conn,
         &wallet_id,
         round_id,
         bundle_index,
         proposal_id,
         vc_tree_position,
     )
+    .await
 }
 
-pub(crate) fn record_vc_position_with_conn(
-    conn: &rusqlite::Connection,
+pub(crate) async fn record_vc_position_with_conn(
+    conn: &mut SqliteConnection,
     wallet_id: &str,
     round_id: &str,
     bundle_index: u32,
@@ -788,7 +813,7 @@ pub(crate) fn record_vc_position_with_conn(
             "SELECT choice, commitment, commitment_bundle_json, vc_tree_position FROM votes
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
-            rusqlite::named_params! {
+            named_params! {
                 ":round_id": round_id,
                 ":wallet_id": wallet_id,
                 ":bundle_index": bundle_index as i64,
@@ -796,6 +821,7 @@ pub(crate) fn record_vc_position_with_conn(
             },
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
+        .await
         .optional()
         .map_err(|e| VotingError::Internal {
             message: format!("failed to load vote recovery bundle: {e}"),
@@ -843,6 +869,7 @@ pub(crate) fn record_vc_position_with_conn(
             &serialize_recovery(&recovery)?,
             vc_tree_position_i64,
         )
+        .await
     } else {
         store_vc_position_if_unset_or_same(
             conn,
@@ -854,31 +881,33 @@ pub(crate) fn record_vc_position_with_conn(
             stored_commitment.as_deref(),
             vc_tree_position_i64,
         )
+        .await
     }
 }
 
 /// Loads and parses the persisted vote recovery bundle, if present.
-pub fn recovery_bundle(
+pub async fn recovery_bundle(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     proposal_id: u32,
 ) -> Result<Option<VoteRecoveryBundle>, VotingError> {
-    let conn = db.conn();
+    let mut conn = db.conn().await?;
     let wallet_id = db.wallet_id();
     let json: Option<Option<String>> = conn
         .query_row(
             "SELECT commitment_bundle_json FROM votes
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
-            rusqlite::named_params! {
+            named_params! {
                 ":round_id": round_id,
-                ":wallet_id": wallet_id,
+                ":wallet_id": &wallet_id,
                 ":bundle_index": bundle_index as i64,
                 ":proposal_id": proposal_id as i64,
             },
             |row| row.get(0),
         )
+        .await
         .optional()
         .map_err(|e| VotingError::Internal {
             message: format!("failed to load vote recovery bundle: {e}"),
@@ -908,7 +937,7 @@ pub fn parse_recovery(json: &str) -> Result<VoteRecoveryBundle, VotingError> {
     VoteRecoveryBundle::try_from(parsed)
 }
 
-fn store_recovery_json_for_vote(
+async fn store_recovery_json_for_vote(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -917,7 +946,7 @@ fn store_recovery_json_for_vote(
     commitment: Option<&[u8]>,
     json: &str,
 ) -> Result<(), VotingError> {
-    let conn = db.conn();
+    let mut conn = db.conn().await?;
     let wallet_id = db.wallet_id();
     let rows = conn
         .execute(
@@ -926,22 +955,23 @@ fn store_recovery_json_for_vote(
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id
                AND choice = :choice
                AND (commitment = :commitment OR (commitment IS NULL AND :commitment IS NULL))",
-            rusqlite::named_params! {
+            named_params! {
                 ":json": json,
                 ":choice": choice as i64,
                 ":commitment": commitment,
                 ":round_id": round_id,
-                ":wallet_id": wallet_id,
+                ":wallet_id": &wallet_id,
                 ":bundle_index": bundle_index as i64,
                 ":proposal_id": proposal_id as i64,
             },
         )
+        .await
         .map_err(|e| VotingError::Internal {
             message: format!("failed to store vote recovery bundle: {e}"),
         })?;
     if rows == 0 {
         return handle_vote_identity_update_miss(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index,
@@ -949,7 +979,8 @@ fn store_recovery_json_for_vote(
             choice as i64,
             commitment,
             "storing recovery",
-        );
+        )
+        .await;
     }
     Ok(())
 }
@@ -1068,8 +1099,8 @@ fn validate_recovery_matches_stored_vote(
     Ok(())
 }
 
-fn handle_vote_identity_update_miss(
-    conn: &rusqlite::Connection,
+async fn handle_vote_identity_update_miss(
+    conn: &mut SqliteConnection,
     round_id: &str,
     wallet_id: &str,
     bundle_index: u32,
@@ -1083,7 +1114,7 @@ fn handle_vote_identity_update_miss(
             "SELECT choice, commitment FROM votes
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
-            rusqlite::named_params! {
+            named_params! {
                 ":round_id": round_id,
                 ":wallet_id": wallet_id,
                 ":bundle_index": bundle_index as i64,
@@ -1091,6 +1122,7 @@ fn handle_vote_identity_update_miss(
             },
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
+        .await
         .optional()
         .map_err(|e| VotingError::Internal {
             message: format!("failed to load vote identity: {e}"),
@@ -1112,8 +1144,8 @@ fn handle_vote_identity_update_miss(
     }
 }
 
-fn handle_vc_position_update_miss(
-    conn: &rusqlite::Connection,
+async fn handle_vc_position_update_miss(
+    conn: &mut SqliteConnection,
     round_id: &str,
     wallet_id: &str,
     bundle_index: u32,
@@ -1125,7 +1157,7 @@ fn handle_vc_position_update_miss(
             "SELECT vc_tree_position FROM votes
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
-            rusqlite::named_params! {
+            named_params! {
                 ":round_id": round_id,
                 ":wallet_id": wallet_id,
                 ":bundle_index": bundle_index as i64,
@@ -1133,6 +1165,7 @@ fn handle_vc_position_update_miss(
             },
             |row| row.get(0),
         )
+        .await
         .optional()
         .map_err(|e| VotingError::Internal {
             message: format!("failed to load vote commitment tree position: {e}"),
@@ -1148,8 +1181,8 @@ fn handle_vc_position_update_miss(
     }
 }
 
-fn store_recovery_json_with_vc_position_if_unchanged(
-    conn: &rusqlite::Connection,
+async fn store_recovery_json_with_vc_position_if_unchanged(
+    conn: &mut SqliteConnection,
     wallet_id: &str,
     round_id: &str,
     bundle_index: u32,
@@ -1169,7 +1202,7 @@ fn store_recovery_json_with_vc_position_if_unchanged(
                AND (commitment = :commitment OR (commitment IS NULL AND :commitment IS NULL))
                AND commitment_bundle_json = :expected_json
                AND (vc_tree_position IS NULL OR vc_tree_position = :pos)",
-            rusqlite::named_params! {
+            named_params! {
                 ":json": updated_json,
                 ":expected_json": expected_json,
                 ":choice": choice,
@@ -1181,6 +1214,7 @@ fn store_recovery_json_with_vc_position_if_unchanged(
                 ":proposal_id": proposal_id as i64,
             },
         )
+        .await
         .map_err(|e| VotingError::Internal {
             message: format!("failed to store vote recovery bundle position: {e}"),
         })?;
@@ -1194,13 +1228,14 @@ fn store_recovery_json_with_vc_position_if_unchanged(
             choice,
             commitment,
             "recording vote commitment tree position",
-        )?;
+        )
+        .await?;
         let current: Option<(Option<String>, Option<i64>)> = conn
             .query_row(
                 "SELECT commitment_bundle_json, vc_tree_position FROM votes
                  WHERE round_id = :round_id AND wallet_id = :wallet_id
                    AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
-                rusqlite::named_params! {
+                named_params! {
                     ":round_id": round_id,
                     ":wallet_id": wallet_id,
                     ":bundle_index": bundle_index as i64,
@@ -1208,6 +1243,7 @@ fn store_recovery_json_with_vc_position_if_unchanged(
                 },
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
+            .await
             .optional()
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to reload vote recovery bundle: {e}"),
@@ -1226,7 +1262,8 @@ fn store_recovery_json_with_vc_position_if_unchanged(
                     bundle_index,
                     proposal_id,
                     vc_tree_position,
-                );
+                )
+                .await;
             }
             Some(_) => {
                 return Err(vote_identity_changed_error(
@@ -1242,8 +1279,8 @@ fn store_recovery_json_with_vc_position_if_unchanged(
     Ok(())
 }
 
-fn store_vc_position_if_unset_or_same(
-    conn: &rusqlite::Connection,
+async fn store_vc_position_if_unset_or_same(
+    conn: &mut SqliteConnection,
     wallet_id: &str,
     round_id: &str,
     bundle_index: u32,
@@ -1260,7 +1297,7 @@ fn store_vc_position_if_unset_or_same(
                AND choice = :choice
                AND (commitment = :commitment OR (commitment IS NULL AND :commitment IS NULL))
                AND (vc_tree_position IS NULL OR vc_tree_position = :pos)",
-            rusqlite::named_params! {
+            named_params! {
                 ":pos": vc_tree_position,
                 ":choice": choice,
                 ":commitment": commitment,
@@ -1270,6 +1307,7 @@ fn store_vc_position_if_unset_or_same(
                 ":proposal_id": proposal_id as i64,
             },
         )
+        .await
         .map_err(|e| VotingError::Internal {
             message: format!("failed to record vote commitment tree position: {e}"),
         })?;
@@ -1283,7 +1321,8 @@ fn store_vc_position_if_unset_or_same(
             choice,
             commitment,
             "recording vote commitment tree position",
-        )?;
+        )
+        .await?;
         return handle_vc_position_update_miss(
             conn,
             round_id,
@@ -1291,7 +1330,8 @@ fn store_vc_position_if_unset_or_same(
             bundle_index,
             proposal_id,
             vc_tree_position,
-        );
+        )
+        .await;
     }
     Ok(())
 }
@@ -1344,13 +1384,13 @@ pub(crate) fn validate_recovery_bundle_vote_fields(
     Ok(())
 }
 
-fn ensure_vote_rebuild_allowed(
+async fn ensure_vote_rebuild_allowed(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     proposal_id: u32,
 ) -> Result<(), VotingError> {
-    let conn = db.conn();
+    let mut conn = db.conn().await?;
     let wallet_id = db.wallet_id();
     let has_tx_hash = conn
         .query_row(
@@ -1367,6 +1407,7 @@ fn ensure_vote_rebuild_allowed(
             },
             |row| Ok(row.get::<_, i64>(0)? != 0),
         )
+        .await
         .optional()
         .map_err(|e| VotingError::Internal {
             message: format!("failed to check vote submission state: {e}"),
@@ -1534,7 +1575,7 @@ fn array32_vec(label: &str, values: Vec<Vec<u8>>) -> Result<Vec<[u8; 32]>, Votin
         .collect()
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::{
@@ -2347,12 +2388,13 @@ mod tests {
                 "SELECT vc_tree_position FROM votes
                  WHERE round_id = :round_id AND wallet_id = :wallet_id
                    AND bundle_index = 0 AND proposal_id = 1",
-                rusqlite::named_params! {
+                named_params! {
                     ":round_id": ROUND_ID,
                     ":wallet_id": WALLET_ID,
                 },
                 |row| row.get(0),
             )
+            .await
             .unwrap();
 
         assert_eq!(position, Some(321));

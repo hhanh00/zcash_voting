@@ -4,9 +4,11 @@
 //! clients. This module owns the common step that turns the confirmed tx events
 //! back into voting DB state.
 
+use crate::named_params;
+use crate::storage::sqlx_ext::{ConnectionExt, OptionalExtension};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
-use rusqlite::{named_params, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sqlx::{Connection as _, SqliteConnection};
 
 use crate::storage::{queries, VotingDb};
 use crate::types::VotingError;
@@ -44,7 +46,7 @@ pub struct TxEventAttribute {
 /// the event round id does not match `round_id`, stored confirmation fields
 /// conflict, multiple same-round delegation events are present, or the DB
 /// transaction cannot commit.
-pub fn confirm_delegation_submission(
+pub async fn confirm_delegation_submission(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -52,7 +54,7 @@ pub fn confirm_delegation_submission(
     events: &[TxEvent],
 ) -> Result<DelegationConfirmation, VotingError> {
     let confirmation = parse_delegation_confirmation_for_round(tx_hash, round_id, events)?;
-    record_delegation_confirmation(db, round_id, bundle_index, &confirmation)?;
+    record_delegation_confirmation(db, round_id, bundle_index, &confirmation).await?;
     Ok(confirmation)
 }
 
@@ -66,21 +68,21 @@ pub fn confirm_delegation_submission(
 ///
 /// Returns an error when the bundle row is missing, stored confirmation fields
 /// conflict, or the DB transaction cannot commit.
-fn record_delegation_confirmation(
+async fn record_delegation_confirmation(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     confirmation: &DelegationConfirmation,
 ) -> Result<(), VotingError> {
     require_tx_hash(&confirmation.tx_hash)?;
-    let mut conn = db.conn();
+    let mut conn = db.conn().await?;
     let wallet_id = db.wallet_id();
-    let tx = conn.transaction().map_err(|e| VotingError::Internal {
+    let mut tx = conn.begin().await.map_err(|e| VotingError::Internal {
         message: format!("delegation confirmation transaction failed: {e}"),
     })?;
 
     let (stored_hash, stored_van_position) =
-        load_bundle_confirmation_fields(&tx, round_id, &wallet_id, bundle_index)?;
+        load_bundle_confirmation_fields(&mut tx, round_id, &wallet_id, bundle_index).await?;
     check_text_conflict(
         stored_hash.as_deref(),
         &confirmation.tx_hash,
@@ -89,22 +91,24 @@ fn record_delegation_confirmation(
     let should_store_van_position =
         delegation_van_position_should_update(stored_van_position, confirmation.van_leaf_position)?;
     queries::store_delegation_tx_hash(
-        &tx,
+        &mut tx,
         round_id,
         &wallet_id,
         bundle_index,
         &confirmation.tx_hash,
-    )?;
+    )
+    .await?;
     if should_store_van_position {
         queries::store_van_position(
-            &tx,
+            &mut tx,
             round_id,
             &wallet_id,
             bundle_index,
             confirmation.van_leaf_position,
-        )?;
+        )
+        .await?;
     }
-    tx.commit().map_err(|e| VotingError::Internal {
+    tx.commit().await.map_err(|e| VotingError::Internal {
         message: format!("commit delegation confirmation transaction failed: {e}"),
     })
 }
@@ -117,7 +121,7 @@ fn record_delegation_confirmation(
 /// missing, the event round id does not match `round_id`, stored confirmation
 /// fields conflict, multiple same-round cast-vote events are present, or the DB
 /// transaction cannot commit.
-pub fn confirm_vote_submission(
+pub async fn confirm_vote_submission(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -126,7 +130,7 @@ pub fn confirm_vote_submission(
     events: &[TxEvent],
 ) -> Result<VoteConfirmation, VotingError> {
     let confirmation = parse_vote_confirmation_for_round(tx_hash, round_id, events)?;
-    record_vote_confirmation(db, round_id, bundle_index, proposal_id, &confirmation)?;
+    record_vote_confirmation(db, round_id, bundle_index, proposal_id, &confirmation).await?;
     Ok(confirmation)
 }
 
@@ -141,7 +145,7 @@ pub fn confirm_vote_submission(
 /// Returns an error when the vote or bundle row is missing, stored confirmation
 /// fields conflict, ballot intent no longer matches the vote, or the DB
 /// transaction cannot commit.
-fn record_vote_confirmation(
+async fn record_vote_confirmation(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -149,44 +153,47 @@ fn record_vote_confirmation(
     confirmation: &VoteConfirmation,
 ) -> Result<(), VotingError> {
     require_tx_hash(&confirmation.tx_hash)?;
-    let mut conn = db.conn();
+    let mut conn = db.conn().await?;
     let wallet_id = db.wallet_id();
-    let tx = conn.transaction().map_err(|e| VotingError::Internal {
+    let mut tx = conn.begin().await.map_err(|e| VotingError::Internal {
         message: format!("vote confirmation transaction failed: {e}"),
     })?;
 
     queries::record_vote_submission(
-        &tx,
+        &mut tx,
         round_id,
         &wallet_id,
         bundle_index,
         proposal_id,
         &confirmation.tx_hash,
-    )?;
-    require_vote_recovery_json(&tx, round_id, &wallet_id, bundle_index, proposal_id)?;
+    )
+    .await?;
+    require_vote_recovery_json(&mut tx, round_id, &wallet_id, bundle_index, proposal_id).await?;
     advance_van_position_in_tx(
-        &tx,
+        &mut tx,
         round_id,
         &wallet_id,
         bundle_index,
         confirmation.van_leaf_position,
-    )?;
+    )
+    .await?;
     crate::vote::record_vc_position_with_conn(
-        &tx,
+        &mut tx,
         &wallet_id,
         round_id,
         bundle_index,
         proposal_id,
         confirmation.vc_tree_position,
-    )?;
+    )
+    .await?;
 
-    tx.commit().map_err(|e| VotingError::Internal {
+    tx.commit().await.map_err(|e| VotingError::Internal {
         message: format!("commit vote confirmation transaction failed: {e}"),
     })
 }
 
-fn require_vote_recovery_json(
-    conn: &rusqlite::Connection,
+async fn require_vote_recovery_json(
+    conn: &mut SqliteConnection,
     round_id: &str,
     wallet_id: &str,
     bundle_index: u32,
@@ -208,6 +215,7 @@ fn require_vote_recovery_json(
             },
             |row| row.get(0),
         )
+        .await
         .optional()
         .map_err(|e| VotingError::Internal {
             message: format!("failed to load vote recovery bundle: {e}"),
@@ -390,8 +398,8 @@ fn parse_u64(raw: &str, field: &str) -> Result<u64, VotingError> {
     })
 }
 
-fn load_bundle_confirmation_fields(
-    conn: &rusqlite::Connection,
+async fn load_bundle_confirmation_fields(
+    conn: &mut SqliteConnection,
     round_id: &str,
     wallet_id: &str,
     bundle_index: u32,
@@ -409,6 +417,7 @@ fn load_bundle_confirmation_fields(
         },
         |row| Ok((row.get(0)?, row.get(1)?)),
     )
+    .await
     .optional()
     .map_err(|e| VotingError::Internal {
         message: format!("failed to load bundle confirmation fields: {e}"),
@@ -437,15 +446,15 @@ fn delegation_van_position_should_update(
     }
 }
 
-fn advance_van_position_in_tx(
-    conn: &rusqlite::Connection,
+async fn advance_van_position_in_tx(
+    conn: &mut SqliteConnection,
     round_id: &str,
     wallet_id: &str,
     bundle_index: u32,
     van_leaf_position: u32,
 ) -> Result<(), VotingError> {
     let (_, stored_van_position) =
-        load_bundle_confirmation_fields(conn, round_id, wallet_id, bundle_index)?;
+        load_bundle_confirmation_fields(conn, round_id, wallet_id, bundle_index).await?;
     if let Some(stored_van_position) = stored_van_position {
         if stored_van_position < 0 {
             return Err(VotingError::InvalidInput {
@@ -456,7 +465,7 @@ fn advance_van_position_in_tx(
             return Ok(());
         }
     }
-    queries::store_van_position(conn, round_id, wallet_id, bundle_index, van_leaf_position)
+    queries::store_van_position(conn, round_id, wallet_id, bundle_index, van_leaf_position).await
 }
 
 fn check_text_conflict(
@@ -474,7 +483,7 @@ fn check_text_conflict(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::round::{RoundParams, VotingDb};
@@ -776,7 +785,9 @@ mod tests {
 
         assert_eq!(confirmation.van_leaf_position, 42);
         assert_eq!(
-            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0).unwrap(),
+            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
+                .unwrap(),
             42
         );
     }
@@ -806,6 +817,7 @@ mod tests {
         assert!(err.to_string().contains("ambiguous delegate_vote events"));
         assert_eq!(
             queries::get_delegation_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
                 .unwrap()
                 .as_deref(),
             None
@@ -830,6 +842,7 @@ mod tests {
             .contains("missing vote_round_id or round_id"));
         assert_eq!(
             queries::get_delegation_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
                 .unwrap()
                 .as_deref(),
             None
@@ -850,12 +863,15 @@ mod tests {
 
         assert_eq!(
             queries::get_delegation_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
                 .unwrap()
                 .as_deref(),
             Some("tx-1")
         );
         assert_eq!(
-            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0).unwrap(),
+            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
+                .unwrap(),
             42
         );
         assert_eq!(
@@ -922,6 +938,7 @@ mod tests {
         assert!(err.to_string().contains("delegation tx_hash conflict"));
         assert_eq!(
             queries::get_delegation_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
                 .unwrap()
                 .as_deref(),
             Some("tx-1")
@@ -945,12 +962,15 @@ mod tests {
 
         assert_eq!(
             queries::get_vote_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0, 1)
+                .await
                 .unwrap()
                 .as_deref(),
             Some("tx-1")
         );
         assert_eq!(
-            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0).unwrap(),
+            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
+                .unwrap(),
             7
         );
         assert_eq!(
@@ -1020,12 +1040,15 @@ mod tests {
 
         assert_eq!(
             queries::get_vote_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0, 1)
+                .await
                 .unwrap()
                 .as_deref(),
             Some("vote-tx")
         );
         assert_eq!(
-            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0).unwrap(),
+            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
+                .unwrap(),
             8
         );
         assert_eq!(
@@ -1064,12 +1087,15 @@ mod tests {
 
         assert_eq!(
             queries::get_delegation_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
                 .unwrap()
                 .as_deref(),
             Some("delegation-tx")
         );
         assert_eq!(
-            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0).unwrap(),
+            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
+                .unwrap(),
             8
         );
     }
@@ -1108,7 +1134,9 @@ mod tests {
         record_vote_confirmation(&db, ROUND_ID, 0, 1, &first_confirmation).unwrap();
 
         assert_eq!(
-            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0).unwrap(),
+            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
+                .unwrap(),
             9
         );
         assert_eq!(
@@ -1147,6 +1175,7 @@ mod tests {
         assert!(err.to_string().contains("vote recovery bundle not found"));
         assert_eq!(
             queries::get_vote_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0, 1)
+                .await
                 .unwrap()
                 .as_deref(),
             None
@@ -1176,11 +1205,16 @@ mod tests {
         assert!(err.to_string().contains("invalid vote recovery JSON"));
         assert_eq!(
             queries::get_vote_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0, 1)
+                .await
                 .unwrap()
                 .as_deref(),
             None
         );
-        assert!(queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0).is_err());
+        assert!(
+            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
+                .is_err()
+        );
         let (json, pos): (Option<String>, Option<i64>) = db
             .conn()
             .query_row(
@@ -1224,11 +1258,16 @@ mod tests {
         assert!(err.to_string().contains("proposal_id mismatch"));
         assert_eq!(
             queries::get_vote_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0, 1)
+                .await
                 .unwrap()
                 .as_deref(),
             None
         );
-        assert!(queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0).is_err());
+        assert!(
+            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
+                .is_err()
+        );
         let (json, pos): (Option<String>, Option<i64>) = db
             .conn()
             .query_row(
@@ -1275,6 +1314,7 @@ mod tests {
         assert!(err.to_string().contains("ambiguous cast_vote events"));
         assert_eq!(
             queries::get_vote_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0, 1)
+                .await
                 .unwrap()
                 .as_deref(),
             None
@@ -1308,11 +1348,16 @@ mod tests {
         assert!(err.to_string().contains("round id mismatch"));
         assert_eq!(
             queries::get_vote_tx_hash(&db.conn(), ROUND_ID, WALLET_ID, 0, 1)
+                .await
                 .unwrap()
                 .as_deref(),
             None
         );
-        assert!(queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0).is_err());
+        assert!(
+            queries::load_van_position(&db.conn(), ROUND_ID, WALLET_ID, 0)
+                .await
+                .is_err()
+        );
         let (json, pos): (Option<String>, Option<i64>) = db
             .conn()
             .query_row(

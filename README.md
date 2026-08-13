@@ -18,7 +18,8 @@ zcash_voting
 ├── vote-commitment-tree-client ─ vote-commitment-tree
 ├── pir-client / vote-nullifier-pir types
 ├── voting-circuits ───────────── ZK delegation + vote proofs
-└── librustzcash crates ───────── pczt, zcash_keys, zcash_client_sqlite, ...
+├── SQLx 0.8 ──────────────────── async SQLite voting state
+└── librustzcash crates ───────── pczt, zcash_keys, zcash_client_backend, ...
 ```
 
 The config resolver itself is transport-agnostic. Wallets choose the static
@@ -43,7 +44,9 @@ cargo test -p zcash_voting --locked
 ## Wallet API Lifecycle
 
 New wallet integrations should import `zcash_voting::prelude::*` and use the
-stage-oriented API:
+stage-oriented async API. `VotingDb` uses SQLx 0.8 and does not depend on
+`rusqlite` or `zcash_client_sqlite`; wallet-owned note selection and witness
+loading stay at the integration boundary.
 
 - `round::*` creates rounds and binds eligible notes into bundles.
 - `precompute::*` prepares shielded note witnesses, delegation PIR inputs, and VAN
@@ -130,8 +133,8 @@ workspace member:
 
 - **`orchard 0.15`** from [zcash/orchard](https://github.com/zcash/orchard),
   with `unstable-voting-circuits` enabled for the governance proof paths.
-- **`pczt 0.9.2`, `zcash_client_backend 0.24.0-rc.7`,
-  `zcash_client_sqlite 0.22.0-rc.7`, `zcash_keys 0.16.1`,
+- **`sqlx 0.8`** for asynchronous SQLite persistence, aligned with zkool2.
+- **`pczt 0.9.2`, `zcash_client_backend 0.24.0-rc.7`, `zcash_keys 0.16.1`,
   `zcash_primitives 0.30.0`, and `zcash_protocol 0.10.4`** from published
   librustzcash releases.
 - **`voting-circuits 0.9.0-rc.3`** from

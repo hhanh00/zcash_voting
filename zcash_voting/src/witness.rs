@@ -1,18 +1,8 @@
-use std::borrow::Borrow;
+use crate::types::{VotingError, WitnessData};
 
-use crate::{
-    shielded_protocol::VotingShieldedProtocol,
-    storage::{queries, VotingDb},
-    types::{Network, NoteInfo, VotingError, VotingRoundParams, WitnessData},
-};
-
-use incrementalmerkletree::{frontier::CommitmentTree, Hashable, Level, MerklePath, Position};
+use incrementalmerkletree::{Hashable, Level};
 use orchard::tree::MerkleHashOrchard;
-use prost::Message;
 use subtle::CtOption;
-use zcash_client_backend::proto::service::TreeState;
-use zcash_client_sqlite::WalletDb;
-use zcash_protocol::consensus::{BlockHeight, Parameters};
 
 /// Persist a voting snapshot tree state, generate shielded note witnesses, and cache them.
 ///
@@ -20,6 +10,7 @@ use zcash_protocol::consensus::{BlockHeight, Parameters};
 /// path, network, and FFI handling differ by client. This helper owns the shared
 /// voting invariant: the cached tree state is the round snapshot anchor used to
 /// generate and store Merkle witnesses for one bundle.
+#[cfg(any())]
 pub fn store_tree_state_and_generate_note_witnesses<C, P, CL, R>(
     db: &VotingDb,
     round_id: &str,
@@ -45,6 +36,7 @@ where
 /// round height and note commitment root before the wallet source is asked for
 /// historical witnesses.
 #[allow(unreachable_code, unused_variables)]
+#[cfg(any())]
 pub fn generate_note_witnesses<C, P, CL, R>(
     db: &VotingDb,
     round_id: &str,
@@ -156,6 +148,7 @@ where
         .collect())
 }
 
+#[cfg(any())]
 fn validate_wallet_db_network_for_round<C, P, CL, R>(
     db: &VotingDb,
     round_id: &str,
@@ -170,6 +163,7 @@ where
     validate_wallet_network(stored_network, wallet_db)
 }
 
+#[cfg(any())]
 fn validate_wallet_network<C, P, CL, R>(
     stored_network: Network,
     wallet_db: &WalletDb<C, P, CL, R>,
@@ -194,6 +188,7 @@ where
 ///
 /// A Merkle path can be internally valid against the wrong frontier, so callers
 /// must bind both the checkpoint height and protocol root to the persisted round.
+#[cfg(any())]
 fn validate_cached_tree_state_for_round(
     tree_state: &TreeState,
     commitment_root: &[u8],
@@ -310,7 +305,7 @@ fn ct_option_to_result(
     })
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 

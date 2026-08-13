@@ -28,7 +28,6 @@ pub mod prelude;
 pub mod recovery;
 pub mod round;
 pub mod round_auth;
-pub mod selection;
 pub mod session;
 pub mod share;
 pub mod share_policy;
@@ -65,10 +64,6 @@ pub use note_bundling::{
     MINIMUM_VOTING_NOTE_COUNT, MINIMUM_VOTING_WEIGHT_ZATOSHI,
 };
 pub use round::validate_bundle_index;
-pub use selection::{
-    gather_delegation_wallet_inputs, select_notes_with_wallet_db, select_snapshot_notes,
-    DelegationWalletInputs, GatherDelegationWalletParams,
-};
 pub use types::{
     validate_proposal_id, validate_round_params, validate_vote_decision, validate_vote_options,
     CastVoteSignature, DelegationAction, DelegationPirPrecomputeResult, DelegationProgressBridge,

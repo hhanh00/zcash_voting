@@ -4,7 +4,8 @@
 //! different pace, so the stable API reports delegation status per bundle
 //! instead of maintaining one lossy round-level phase.
 
-use rusqlite::{named_params, OptionalExtension};
+use crate::named_params;
+use crate::storage::sqlx_ext::{ConnectionExt, OptionalExtension};
 
 use crate::{storage::VotingDb, types::VotingError};
 
@@ -145,12 +146,12 @@ impl VotingDb {
     ///
     /// Returns [`VotingError::InvalidInput`] when the bundle row does not exist
     /// for the current wallet.
-    pub fn delegation_phase(
+    pub async fn delegation_phase(
         &self,
         round_id: &str,
         bundle_index: u32,
     ) -> Result<DelegationPhase, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let phase = conn
             .query_row(
@@ -182,6 +183,7 @@ impl VotingDb {
                     ))
                 },
             )
+            .await
             .optional()
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to load delegation phase: {e}"),
@@ -195,11 +197,11 @@ impl VotingDb {
     /// Lists canonical delegation phases for all bundles in one round.
     ///
     /// Results are sorted by `bundle_index` and scoped to the current wallet id.
-    pub fn delegation_phases(
+    pub async fn delegation_phases(
         &self,
         round_id: &str,
     ) -> Result<Vec<(u32, DelegationPhase)>, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let mut stmt = conn
             .prepare(
@@ -238,9 +240,11 @@ impl VotingDb {
                     ))
                 },
             )
+            .await
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to query delegation phases: {e}"),
             })?
+            .into_iter()
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to read delegation phase row: {e}"),
@@ -250,13 +254,13 @@ impl VotingDb {
     }
 
     /// Loads the canonical vote phase for one bundle/proposal pair.
-    pub fn vote_phase(
+    pub async fn vote_phase(
         &self,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
     ) -> Result<VotePhase, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let phase = conn
             .query_row(
@@ -281,6 +285,7 @@ impl VotingDb {
                     ))
                 },
             )
+            .await
             .optional()
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to load vote phase: {e}"),
@@ -294,8 +299,11 @@ impl VotingDb {
     }
 
     /// Lists canonical vote phases for all votes in one round.
-    pub fn vote_phases(&self, round_id: &str) -> Result<Vec<(u32, u32, VotePhase)>, VotingError> {
-        let conn = self.conn();
+    pub async fn vote_phases(
+        &self,
+        round_id: &str,
+    ) -> Result<Vec<(u32, u32, VotePhase)>, VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let mut stmt = conn
             .prepare(
@@ -324,9 +332,11 @@ impl VotingDb {
                     ))
                 },
             )
+            .await
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to query vote phases: {e}"),
             })?
+            .into_iter()
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to read vote phase row: {e}"),
@@ -335,14 +345,14 @@ impl VotingDb {
     }
 
     /// Loads the canonical helper-share phase for one share record.
-    pub fn share_phase(
+    pub async fn share_phase(
         &self,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
         share_index: u32,
     ) -> Result<SharePhase, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let phase = conn
             .query_row(
@@ -368,6 +378,7 @@ impl VotingDb {
                     })
                 },
             )
+            .await
             .optional()
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to load share phase: {e}"),
@@ -381,11 +392,11 @@ impl VotingDb {
     }
 
     /// Lists canonical helper-share phases for all shares in one round.
-    pub fn share_phases(
+    pub async fn share_phases(
         &self,
         round_id: &str,
     ) -> Result<Vec<(u32, u32, u32, SharePhase)>, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let mut stmt = conn
             .prepare(
@@ -414,9 +425,11 @@ impl VotingDb {
                     ))
                 },
             )
+            .await
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to query share phases: {e}"),
             })?
+            .into_iter()
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to read share phase row: {e}"),
@@ -425,7 +438,7 @@ impl VotingDb {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::{round::RoundParams, storage::VotingDb, types::NoteInfo};

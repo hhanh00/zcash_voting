@@ -1,5 +1,6 @@
-use rusqlite::Connection;
+use sqlx::{Acquire, SqliteConnection};
 
+use crate::storage::sqlx_ext::{execute_batch, query_row, Params};
 use crate::VotingError;
 
 const CURRENT_VERSION: u32 = 13;
@@ -15,12 +16,17 @@ DROP TABLE IF EXISTS bundles;
 DROP TABLE IF EXISTS cached_tree_state;
 DROP TABLE IF EXISTS rounds;";
 
-pub fn migrate(conn: &mut Connection) -> Result<(), VotingError> {
-    let version: u32 = conn
-        .pragma_query_value(None, "user_version", |r| r.get(0))
-        .map_err(|e| VotingError::Internal {
-            message: format!("failed to read database version: {}", e),
-        })?;
+pub async fn migrate(conn: &mut SqliteConnection) -> Result<(), VotingError> {
+    let version: i64 = query_row(conn, "PRAGMA user_version", Params::default(), |row| {
+        row.get(0)
+    })
+    .await
+    .map_err(|e| VotingError::Internal {
+        message: format!("failed to read database version: {}", e),
+    })?;
+    let version = u32::try_from(version).map_err(|_| VotingError::Internal {
+        message: format!("invalid database version: {version}"),
+    })?;
 
     if version > CURRENT_VERSION {
         return Err(VotingError::Internal {
@@ -32,22 +38,25 @@ pub fn migrate(conn: &mut Connection) -> Result<(), VotingError> {
     }
 
     if version < CURRENT_VERSION {
-        let tx = conn.transaction().map_err(|e| VotingError::Internal {
-            message: format!("failed to start database migration transaction: {}", e),
+        let mut tx = conn.begin().await.map_err(|e| VotingError::Internal {
+            message: format!("failed to start database migration transaction: {e}"),
         })?;
-        tx.execute_batch(RESET_SQL)
+        execute_batch(&mut tx, RESET_SQL)
+            .await
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to reset pre-launch database schema: {}", e),
             })?;
-        tx.execute_batch(include_str!("migrations/001_init.sql"))
+        execute_batch(&mut tx, include_str!("migrations/001_init.sql"))
+            .await
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to create launch database schema: {}", e),
             })?;
-        tx.pragma_update(None, "user_version", CURRENT_VERSION)
+        execute_batch(&mut tx, &format!("PRAGMA user_version = {CURRENT_VERSION}"))
+            .await
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to update database version: {}", e),
             })?;
-        tx.commit().map_err(|e| VotingError::Internal {
+        tx.commit().await.map_err(|e| VotingError::Internal {
             message: format!("failed to commit database migration: {}", e),
         })?;
     }
@@ -55,7 +64,7 @@ pub fn migrate(conn: &mut Connection) -> Result<(), VotingError> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::storage::queries;

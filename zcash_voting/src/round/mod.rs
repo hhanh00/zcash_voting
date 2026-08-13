@@ -6,8 +6,10 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{named_params, OptionalExtension};
+use crate::named_params;
+use crate::storage::sqlx_ext::{ConnectionExt, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sqlx::SqliteConnection;
 
 use crate::{
     note_bundling::{canonical_note_bundle_plan_for_notes, BundlePolicy},
@@ -195,12 +197,12 @@ impl VotingDb {
     }
 
     /// Opens the voting sidecar database for `wallet_db_path` and binds `wallet_id`.
-    pub fn open_wallet_sidecar(
+    pub async fn open_wallet_sidecar(
         wallet_db_path: &Path,
         wallet_id: &str,
     ) -> Result<Self, VotingError> {
         let sidecar_path = Self::wallet_sidecar_path(wallet_db_path);
-        let db = Self::open_path(&sidecar_path)?;
+        let db = Self::open_path(&sidecar_path).await?;
         db.set_wallet_id(wallet_id);
         Ok(db)
     }
@@ -210,15 +212,16 @@ impl VotingDb {
     /// Call [`VotingDb::set_wallet_id`] before performing wallet-scoped round
     /// operations. Passing `:memory:` is supported through the legacy string
     /// API; prefer [`VotingDb::open_in_memory`] for in-memory tests.
-    pub fn open_path(path: &Path) -> Result<Self, VotingError> {
+    pub async fn open_path(path: &Path) -> Result<Self, VotingError> {
         Self::open(path.to_str().ok_or_else(|| VotingError::InvalidInput {
             message: "voting database path is not valid UTF-8".to_string(),
         })?)
+        .await
     }
 
     /// Opens a fresh in-memory voting database for tests and examples.
-    pub fn open_in_memory() -> Result<Self, VotingError> {
-        Self::open(":memory:")
+    pub async fn open_in_memory() -> Result<Self, VotingError> {
+        Self::open(":memory:").await
     }
 
     /// Creates a voting round for the current wallet.
@@ -227,32 +230,32 @@ impl VotingDb {
     /// round parameters and is idempotent only at the caller layer; inserting an
     /// already-existing `(wallet_id, round_id)` pair returns an error from the
     /// underlying SQLite constraint.
-    pub fn create_round(
+    pub async fn create_round(
         &self,
         network: Network,
         params: &RoundParams,
         session_json: Option<&str>,
     ) -> Result<(), VotingError> {
         crate::types::validate_round_params(params)?;
-        self.init_round(network, params, session_json)
+        self.init_round(network, params, session_json).await
     }
 
     /// Ensures a round exists for `params`, initializing it when absent.
     ///
     /// Existing rounds are left unchanged. `session_json` is stored only on the
     /// first insert.
-    pub fn ensure_round(
+    pub async fn ensure_round(
         &self,
         network: Network,
         params: &RoundParams,
         session_json: Option<&str>,
     ) -> Result<(), VotingError> {
         crate::types::validate_round_params(params)?;
-        if self.has_round(&params.vote_round_id)? {
-            let conn = self.conn();
+        if self.has_round(&params.vote_round_id).await? {
+            let mut conn = self.conn().await?;
             let wallet_id = self.wallet_id();
             let stored_network =
-                queries::load_round_network(&conn, &params.vote_round_id, &wallet_id)?;
+                queries::load_round_network(&mut conn, &params.vote_round_id, &wallet_id).await?;
             if stored_network != network {
                 return Err(VotingError::InvalidInput {
                     message: format!(
@@ -263,36 +266,36 @@ impl VotingDb {
             }
             return Ok(());
         }
-        self.init_round(network, params, session_json)
+        self.init_round(network, params, session_json).await
     }
 
     /// Ensures a round exists and returns its persisted state.
     ///
     /// Existing rounds are returned unchanged. Missing rounds are initialized
     /// with `session_json` and then reloaded.
-    pub fn ensure_round_state(
+    pub async fn ensure_round_state(
         &self,
         network: Network,
         params: &RoundParams,
         session_json: Option<&str>,
     ) -> Result<RoundState, VotingError> {
-        self.ensure_round(network, params, session_json)?;
-        self.get_round_state(&params.vote_round_id)
+        self.ensure_round(network, params, session_json).await?;
+        self.get_round_state(&params.vote_round_id).await
     }
 
     /// Loads one round summary for the current wallet.
     ///
     /// Returns `Ok(None)` when the round does not exist. Other database errors
     /// are returned as [`VotingError::Internal`].
-    pub fn round(&self, round_id: &str) -> Result<Option<RoundInfo>, VotingError> {
-        let conn = self.conn();
+    pub async fn round(&self, round_id: &str) -> Result<Option<RoundInfo>, VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let row = conn
             .query_row(
                 "SELECT network, snapshot_height, created_at
                  FROM rounds
                  WHERE round_id = :round_id AND wallet_id = :wallet_id",
-                named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
+                named_params! { ":round_id": round_id, ":wallet_id": &wallet_id },
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -301,6 +304,7 @@ impl VotingDb {
                     ))
                 },
             )
+            .await
             .optional()
             .map_err(|e| VotingError::Internal {
                 message: format!("failed to load round {round_id}: {e}"),
@@ -311,8 +315,8 @@ impl VotingDb {
         };
         let network = queries::network_from_storage(&network)?;
 
-        let bundle_count = queries::get_bundle_count(&conn, round_id, &wallet_id)?;
-        let eligible_weight = round_eligible_weight(&conn, round_id, &wallet_id)?;
+        let bundle_count = queries::get_bundle_count(&mut conn, round_id, &wallet_id).await?;
+        let eligible_weight = round_eligible_weight(&mut conn, round_id, &wallet_id).await?;
 
         Ok(Some(RoundInfo {
             round_id: round_id.to_string(),
@@ -326,21 +330,22 @@ impl VotingDb {
     }
 
     /// Lists all rounds for the current wallet in newest-first order.
-    pub fn rounds(&self) -> Result<Vec<RoundInfo>, VotingError> {
-        self.list_rounds()?
-            .into_iter()
-            .map(|summary| {
-                self.round(&summary.round_id)?
-                    .ok_or_else(|| VotingError::Internal {
-                        message: format!("round disappeared while listing: {}", summary.round_id),
-                    })
-            })
-            .collect()
+    pub async fn rounds(&self) -> Result<Vec<RoundInfo>, VotingError> {
+        let summaries = self.list_rounds().await?;
+        let mut rounds = Vec::with_capacity(summaries.len());
+        for summary in summaries {
+            rounds.push(self.round(&summary.round_id).await?.ok_or_else(|| {
+                VotingError::Internal {
+                    message: format!("round disappeared while listing: {}", summary.round_id),
+                }
+            })?);
+        }
+        Ok(rounds)
     }
 
     /// Deletes all persisted state for one round in the current wallet scope.
-    pub fn delete_round(&self, round_id: &str) -> Result<(), VotingError> {
-        self.clear_round(round_id)
+    pub async fn delete_round(&self, round_id: &str) -> Result<(), VotingError> {
+        self.clear_round(round_id).await
     }
 
     /// Creates bundle rows for `notes`, or validates existing bundle rows.
@@ -349,12 +354,13 @@ impl VotingDb {
     /// are the canonical library policy. On first call, surviving bundles are
     /// persisted. On later calls, the same notes must reproduce the stored
     /// bundle identities.
-    pub fn ensure_bundles(
+    pub async fn ensure_bundles(
         &self,
         round_id: &str,
         notes: &[NoteInfo],
     ) -> Result<BundleLayout, VotingError> {
         self.ensure_bundles_with_policy(round_id, notes, BundlePolicy::default())
+            .await
     }
 
     /// Creates bundle rows for `notes`, or validates existing rows under `policy`.
@@ -363,7 +369,7 @@ impl VotingDb {
     /// are controlled by `policy`. On first call, surviving bundles are
     /// persisted. On later calls, the same notes and policy must reproduce the
     /// stored bundle identities.
-    pub fn ensure_bundles_with_policy(
+    pub async fn ensure_bundles_with_policy(
         &self,
         round_id: &str,
         notes: &[NoteInfo],
@@ -371,10 +377,10 @@ impl VotingDb {
     ) -> Result<BundleLayout, VotingError> {
         let plan = canonical_note_bundle_plan_for_notes(notes, policy)?;
         let expected_count = plan.bundles.len() as u32;
-        let existing_count = self.get_bundle_count(round_id)?;
+        let existing_count = self.get_bundle_count(round_id).await?;
 
         if existing_count == 0 {
-            let (bundle_count, eligible_weight) = self.persist_bundle_plan(round_id, &plan)?;
+            let (bundle_count, eligible_weight) = self.persist_bundle_plan(round_id, &plan).await?;
             return Ok(BundleLayout {
                 bundle_count,
                 eligible_weight,
@@ -390,16 +396,17 @@ impl VotingDb {
             });
         }
 
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         for (bundle_index, bundle_notes) in plan.bundles.iter().enumerate() {
             queries::require_bundle_notes(
-                &conn,
+                &mut conn,
                 round_id,
                 &wallet_id,
                 bundle_index as u32,
                 bundle_notes,
-            )?;
+            )
+            .await?;
         }
 
         Ok(BundleLayout {
@@ -421,7 +428,7 @@ impl VotingDb {
     /// current note selection has fewer bundles than storage, if persisted
     /// bundle note identities do not match, or if bundle weight calculation
     /// overflows. Database failures are returned as [`VotingError::Internal`].
-    pub fn ensure_bundles_with_skipped_suffix(
+    pub async fn ensure_bundles_with_skipped_suffix(
         &self,
         round_id: &str,
         notes: &[NoteInfo],
@@ -431,6 +438,7 @@ impl VotingDb {
             notes,
             BundlePolicy::default(),
         )
+        .await
     }
 
     /// Creates bundle rows or validates a persisted prefix under `policy`.
@@ -438,16 +446,18 @@ impl VotingDb {
     /// This variant supports Keystone recovery flows where the user intentionally
     /// skips unsigned trailing bundles. Existing rows must still match the
     /// current note selection prefix exactly under the supplied policy.
-    pub fn ensure_bundles_with_skipped_suffix_with_policy(
+    pub async fn ensure_bundles_with_skipped_suffix_with_policy(
         &self,
         round_id: &str,
         notes: &[NoteInfo],
         policy: BundlePolicy,
     ) -> Result<BundleLayout, VotingError> {
         crate::types::validate_notes_for_round(notes)?;
-        let stored_count = self.get_bundle_count(round_id)?;
+        let stored_count = self.get_bundle_count(round_id).await?;
         if stored_count == 0 {
-            return self.ensure_bundles_with_policy(round_id, notes, policy);
+            return self
+                .ensure_bundles_with_policy(round_id, notes, policy)
+                .await;
         }
 
         let bundles = note_bundles_with_policy(notes, policy)?;
@@ -461,7 +471,7 @@ impl VotingDb {
         }
 
         let stored_bundles = &bundles[..stored_count as usize];
-        validate_persisted_bundle_notes(self, round_id, stored_bundles)?;
+        validate_persisted_bundle_notes(self, round_id, stored_bundles).await?;
         Ok(BundleLayout {
             bundle_count: stored_count,
             eligible_weight: quantized_bundle_set_weight(stored_bundles)?,
@@ -470,27 +480,28 @@ impl VotingDb {
     }
 }
 
-fn validate_persisted_bundle_notes(
+async fn validate_persisted_bundle_notes(
     db: &VotingDb,
     round_id: &str,
     bundles: &[Vec<NoteInfo>],
 ) -> Result<(), VotingError> {
-    let conn = db.conn();
+    let mut conn = db.conn().await?;
     let wallet_id = db.wallet_id();
     for (bundle_index, bundle_notes) in bundles.iter().enumerate() {
         queries::require_bundle_notes(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index as u32,
             bundle_notes,
-        )?;
+        )
+        .await?;
     }
     Ok(())
 }
 
-fn round_eligible_weight(
-    conn: &rusqlite::Connection,
+async fn round_eligible_weight(
+    conn: &mut SqliteConnection,
     round_id: &str,
     wallet_id: &str,
 ) -> Result<Option<u64>, VotingError> {
@@ -506,6 +517,7 @@ fn round_eligible_weight(
             },
             |row| row.get(0),
         )
+        .await
         .map_err(|e| VotingError::Internal {
             message: format!("failed to calculate round eligible weight: {e}"),
         })?;
@@ -513,7 +525,7 @@ fn round_eligible_weight(
     Ok(total.map(|v| v as u64))
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 

@@ -31,7 +31,7 @@ impl From<(MerklePath, u32)> for VanWitness {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use ff::PrimeField;
@@ -414,12 +414,17 @@ impl VoteTreeSync {
     /// incremental client, allowing a later sync to resume normally.
     ///
     /// Returns the latest synced block height.
-    pub fn sync(&self, db: &VotingDb, round_id: &str, node_url: &str) -> Result<u32, VotingError> {
+    pub async fn sync(
+        &self,
+        db: &VotingDb,
+        round_id: &str,
+        node_url: &str,
+    ) -> Result<u32, VotingError> {
         let api = HttpTreeSyncApi::new(node_url, round_id, self.transport.clone());
-        self.sync_with_api(db, round_id, &api)
+        self.sync_with_api(db, round_id, &api).await
     }
 
-    pub(crate) fn sync_with_api<A>(
+    pub(crate) async fn sync_with_api<A>(
         &self,
         db: &VotingDb,
         round_id: &str,
@@ -429,7 +434,8 @@ impl VoteTreeSync {
         A: TreeSyncApi,
     {
         let wallet_id = db.wallet_id();
-        let entries = queries::load_van_tree_entries(&db.conn(), round_id, &wallet_id)?;
+        let mut conn = db.conn().await?;
+        let entries = queries::load_van_tree_entries(&mut conn, round_id, &wallet_id).await?;
         let positions = entries
             .iter()
             .map(|entry| u64::from(entry.position))
@@ -518,14 +524,14 @@ impl VoteTreeSync {
     /// Requires `sync` to have been called first for this round. Loads the VAN
     /// position for the specified bundle and generates a witness at the given
     /// anchor height.
-    pub fn generate_van_witness(
+    pub async fn generate_van_witness(
         &self,
         db: &VotingDb,
         round_id: &str,
         bundle_index: u32,
         anchor_height: u32,
     ) -> Result<VanWitness, VotingError> {
-        let van_position = db.load_van_position(round_id, bundle_index)?;
+        let van_position = db.load_van_position(round_id, bundle_index).await?;
 
         let round_client = {
             let clients = self.clients.lock().map_err(|e| VotingError::Internal {

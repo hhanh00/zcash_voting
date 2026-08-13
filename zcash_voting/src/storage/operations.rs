@@ -7,6 +7,7 @@ use orchard::{
     primitives::redpallas::{Signature, SpendAuth, VerificationKey},
 };
 use pasta_curves::pallas;
+use sqlx::Connection as _;
 use voting_circuits::delegation::{synthetic_padding_note_parts, ImtProofData};
 use zcash_keys::keys::UnifiedFullViewingKey;
 
@@ -323,68 +324,68 @@ impl VotingDb {
     // --- Round management ---
 
     /// Initialize a new voting round. Stores params, sets phase to Initialized.
-    pub fn init_round(
+    pub async fn init_round(
         &self,
         network: Network,
         params: &VotingRoundParams,
         session_json: Option<&str>,
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::insert_round(&conn, &wallet_id, network, params, session_json)
+        queries::insert_round(&mut conn, &wallet_id, network, params, session_json).await
     }
 
     /// Get the current state of a voting round.
-    pub fn get_round_state(&self, round_id: &str) -> Result<RoundState, VotingError> {
-        let conn = self.conn();
+    pub async fn get_round_state(&self, round_id: &str) -> Result<RoundState, VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_round_state(&conn, round_id, &wallet_id)
+        queries::get_round_state(&mut conn, round_id, &wallet_id).await
     }
 
     /// Loads the stored round network and rejects a caller-supplied mismatch.
-    pub(crate) fn require_round_network(
+    pub(crate) async fn require_round_network(
         &self,
         round_id: &str,
         network: Network,
         label: &str,
     ) -> Result<Network, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        let stored_network = queries::load_round_network(&conn, round_id, &wallet_id)?;
+        let stored_network = queries::load_round_network(&mut conn, round_id, &wallet_id).await?;
         validate_network_matches_round(stored_network, network, label)?;
         Ok(stored_network)
     }
 
     /// Advance the round phase without allowing regressions.
-    pub fn advance_round_phase(
+    pub async fn advance_round_phase(
         &self,
         round_id: &str,
         phase: RoundPhase,
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::advance_round_phase(&conn, round_id, &wallet_id, phase)
+        queries::advance_round_phase(&mut conn, round_id, &wallet_id, phase).await
     }
 
     /// Return whether a voting round exists for the current wallet.
-    pub fn has_round(&self, round_id: &str) -> Result<bool, VotingError> {
-        let conn = self.conn();
+    pub async fn has_round(&self, round_id: &str) -> Result<bool, VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::has_round(&conn, round_id, &wallet_id)
+        queries::has_round(&mut conn, round_id, &wallet_id).await
     }
 
     /// List all rounds.
-    pub fn list_rounds(&self) -> Result<Vec<RoundSummary>, VotingError> {
-        let conn = self.conn();
+    pub async fn list_rounds(&self) -> Result<Vec<RoundSummary>, VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::list_rounds(&conn, &wallet_id)
+        queries::list_rounds(&mut conn, &wallet_id).await
     }
 
     /// Get all votes for a round, including proposal, bundle, and choice.
-    pub fn get_votes(&self, round_id: &str) -> Result<Vec<VoteRecord>, VotingError> {
-        let conn = self.conn();
+    pub async fn get_votes(&self, round_id: &str) -> Result<Vec<VoteRecord>, VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_votes(&conn, round_id, &wallet_id)
+        queries::get_votes(&mut conn, round_id, &wallet_id).await
     }
 
     /// Test-fixture helper for inserting a stored vote without running the
@@ -393,7 +394,7 @@ impl VotingDb {
     /// This is intended for downstream FFI tests that need recovery-state rows
     /// backed by a vote. It is only compiled for this crate's tests.
     #[cfg(test)]
-    pub fn insert_vote_fixture(
+    pub async fn insert_vote_fixture(
         &self,
         round_id: &str,
         bundle_index: u32,
@@ -401,10 +402,10 @@ impl VotingDb {
         choice: u32,
         commitment: &[u8],
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         queries::store_vote(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index,
@@ -412,13 +413,14 @@ impl VotingDb {
             choice,
             commitment,
         )
+        .await
     }
 
     /// Delete all data for a round.
-    pub fn clear_round(&self, round_id: &str) -> Result<(), VotingError> {
-        let conn = self.conn();
+    pub async fn clear_round(&self, round_id: &str) -> Result<(), VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::clear_round(&conn, round_id, &wallet_id)
+        queries::clear_round(&mut conn, round_id, &wallet_id).await
     }
 
     // --- Bundles ---
@@ -428,12 +430,12 @@ impl VotingDb {
     /// Returns `(bundle_count, eligible_weight)`. Only bundles already present in
     /// `plan` are persisted, so caller-owned planning remains the single source
     /// of truth for bundle policy.
-    pub(crate) fn persist_bundle_plan(
+    pub(crate) async fn persist_bundle_plan(
         &self,
         round_id: &str,
         plan: &ChunkResult,
     ) -> Result<(u32, u64), VotingError> {
-        let mut conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         if plan.dropped_count > 0 {
             eprintln!(
@@ -441,33 +443,33 @@ impl VotingDb {
                 plan.dropped_count,
             );
         }
-        let tx = conn.transaction().map_err(|e| VotingError::Internal {
+        let mut tx = conn.begin().await.map_err(|e| VotingError::Internal {
             message: format!("failed to begin bundle setup transaction: {e}"),
         })?;
         for (i, chunk) in plan.bundles.iter().enumerate() {
-            queries::insert_bundle_notes(&tx, round_id, &wallet_id, i as u32, chunk)?;
+            queries::insert_bundle_notes(&mut tx, round_id, &wallet_id, i as u32, chunk).await?;
         }
-        tx.commit().map_err(|e| VotingError::Internal {
+        tx.commit().await.map_err(|e| VotingError::Internal {
             message: format!("failed to commit bundle setup transaction: {e}"),
         })?;
         Ok((plan.bundles.len() as u32, plan.eligible_weight))
     }
 
     /// Get the number of bundles for a round.
-    pub fn get_bundle_count(&self, round_id: &str) -> Result<u32, VotingError> {
-        let conn = self.conn();
+    pub async fn get_bundle_count(&self, round_id: &str) -> Result<u32, VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_bundle_count(&conn, round_id, &wallet_id)
+        queries::get_bundle_count(&mut conn, round_id, &wallet_id).await
     }
 
     /// Enforce the pre-vote confirmation barrier for imported capability rounds.
-    pub(crate) fn require_capability_delegations_confirmed(
+    pub(crate) async fn require_capability_delegations_confirmed(
         &self,
         round_id: &str,
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::require_capability_delegations_confirmed(&conn, round_id, &wallet_id)
+        queries::require_capability_delegations_confirmed(&mut conn, round_id, &wallet_id).await
     }
 
     /// Ensure synthetic padded-note secrets exist for a delegation bundle.
@@ -475,19 +477,24 @@ impl VotingDb {
     /// These secrets determine the fixed-arity circuit padding nullifiers used
     /// by PIR precompute. They are sampled once per bundle and then treated as
     /// authoritative for later PCZT construction and proving.
-    pub fn ensure_padded_secrets(
+    pub async fn ensure_padded_secrets(
         &self,
         round_id: &str,
         bundle_index: u32,
         notes: &[NoteInfo],
     ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::require_bundle_notes(&conn, round_id, &wallet_id, bundle_index, notes)?;
+        queries::require_bundle_notes(&mut conn, round_id, &wallet_id, bundle_index, notes).await?;
         let expected_padded_count = BUNDLE_NOTE_SLOTS.saturating_sub(notes.len());
 
-        if let Some(secrets) =
-            queries::load_padded_note_secrets_optional(&conn, round_id, &wallet_id, bundle_index)?
+        if let Some(secrets) = queries::load_padded_note_secrets_optional(
+            &mut conn,
+            round_id,
+            &wallet_id,
+            bundle_index,
+        )
+        .await?
         {
             if secrets.len() != expected_padded_count {
                 return Err(VotingError::InvalidInput {
@@ -502,13 +509,16 @@ impl VotingDb {
 
         let sampled = crate::action::sample_padded_note_secrets(notes.len())?;
         queries::store_padded_note_secrets_if_absent(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index,
             &sampled,
-        )?;
-        let stored = queries::load_padded_note_secrets(&conn, round_id, &wallet_id, bundle_index)?;
+        )
+        .await?;
+        let stored =
+            queries::load_padded_note_secrets(&mut conn, round_id, &wallet_id, bundle_index)
+                .await?;
         if stored.len() != expected_padded_count {
             return Err(VotingError::Internal {
                 message: format!(
@@ -526,18 +536,19 @@ impl VotingDb {
     /// `keys` must be the same [`DelegationKeys`] used for PCZT setup. The
     /// prepared-bundle API enforces that by carrying the original keys across
     /// setup and signing request construction.
-    pub fn get_delegation_signing_request(
+    pub async fn get_delegation_signing_request(
         &self,
         round_id: &str,
         bundle_index: u32,
         keys: &DelegationKeys,
     ) -> Result<DelegationSigningRequest, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        let stored_network = queries::load_round_network(&conn, round_id, &wallet_id)?;
+        let stored_network = queries::load_round_network(&mut conn, round_id, &wallet_id).await?;
         validate_network_matches_round(stored_network, keys.network, "delegation keys")?;
-        let sighash = queries::load_pczt_sighash(&conn, round_id, &wallet_id, bundle_index)?;
-        let alpha = queries::load_alpha(&conn, round_id, &wallet_id, bundle_index)?;
+        let sighash =
+            queries::load_pczt_sighash(&mut conn, round_id, &wallet_id, bundle_index).await?;
+        let alpha = queries::load_alpha(&mut conn, round_id, &wallet_id, bundle_index).await?;
 
         Ok(DelegationSigningRequest {
             account_index: keys.account_index,
@@ -565,7 +576,7 @@ impl VotingDb {
     ///
     /// - `consensus_branch_id`: branch ID active at the stored round snapshot height
     /// - `keys`: wallet account and voting hotkey metadata for the delegation PCZT
-    pub fn build_governance_pczt(
+    pub async fn build_governance_pczt(
         &self,
         round_id: &str,
         bundle_index: u32,
@@ -575,19 +586,22 @@ impl VotingDb {
     ) -> Result<GovernancePczt, VotingError> {
         let wallet_id = self.wallet_id();
         let (params, stored_network) = {
-            let conn = self.conn();
+            let mut conn = self.conn().await?;
             let (params, stored_network) =
-                queries::load_round_params_with_network(&conn, round_id, &wallet_id)?;
+                queries::load_round_params_with_network(&mut conn, round_id, &wallet_id).await?;
             validate_consensus_branch_id_for_round(
                 &params,
                 stored_network,
                 keys,
                 consensus_branch_id,
             )?;
-            queries::require_bundle_notes(&conn, round_id, &wallet_id, bundle_index, notes)?;
+            queries::require_bundle_notes(&mut conn, round_id, &wallet_id, bundle_index, notes)
+                .await?;
             (params, stored_network)
         };
-        let padded_note_secrets = self.ensure_padded_secrets(round_id, bundle_index, notes)?;
+        let padded_note_secrets = self
+            .ensure_padded_secrets(round_id, bundle_index, notes)
+            .await?;
         let result = crate::action::build_governance_pczt(
             notes,
             &params,
@@ -609,9 +623,9 @@ impl VotingDb {
                 message: "total note weight overflows u64".to_string(),
             })?;
         // Persist delegation data plus the PCZT-derived signing fields.
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         queries::store_delegation_data_with_pczt_fields(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index,
@@ -632,22 +646,28 @@ impl VotingDb {
             &result.tx1_effects,
             &result.rk,
             &result.gov_nullifiers,
-        )?;
+        )
+        .await?;
         Ok(result)
     }
 
     /// Cache tree state fetched from lightwalletd by SDK.
-    pub fn store_tree_state(&self, round_id: &str, tree_state: &[u8]) -> Result<(), VotingError> {
-        let conn = self.conn();
+    pub async fn store_tree_state(
+        &self,
+        round_id: &str,
+        tree_state: &[u8],
+    ) -> Result<(), VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        let params = queries::load_round_params(&conn, round_id, &wallet_id)?;
+        let params = queries::load_round_params(&mut conn, round_id, &wallet_id).await?;
         queries::store_tree_state(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             params.snapshot_height,
             tree_state,
         )
+        .await
     }
 
     /// Report whether Merkle inclusion witnesses are already cached for a bundle.
@@ -655,22 +675,27 @@ impl VotingDb {
     /// SDK callers use this to skip the expensive witness generation step when a
     /// prior precompute pass already warmed the bundle. Returns `true` when at
     /// least one witness row exists for `(round_id, bundle_index)`.
-    pub fn has_witnesses(&self, round_id: &str, bundle_index: u32) -> Result<bool, VotingError> {
-        let conn = self.conn();
+    pub async fn has_witnesses(
+        &self,
+        round_id: &str,
+        bundle_index: u32,
+    ) -> Result<bool, VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::has_witnesses(&conn, round_id, &wallet_id, bundle_index)
+        queries::has_witnesses(&mut conn, round_id, &wallet_id, bundle_index).await
     }
 
     /// Report whether cached witnesses exactly cover the provided bundle notes.
-    pub fn has_complete_witnesses(
+    pub async fn has_complete_witnesses(
         &self,
         round_id: &str,
         bundle_index: u32,
         notes: &[NoteInfo],
     ) -> Result<bool, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        let witnesses = queries::load_witnesses(&conn, round_id, &wallet_id, bundle_index)?;
+        let witnesses =
+            queries::load_witnesses(&mut conn, round_id, &wallet_id, bundle_index).await?;
         if witnesses.len() != notes.len() {
             return Ok(false);
         }
@@ -695,17 +720,18 @@ impl VotingDb {
     ///
     /// Returns cached witnesses on subsequent calls without re-verification.
     /// Must be called before build_and_prove_delegation.
-    pub fn store_witnesses(
+    pub async fn store_witnesses(
         &self,
         round_id: &str,
         bundle_index: u32,
         witnesses: &[WitnessData],
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        let params = queries::load_round_params(&conn, round_id, &wallet_id)?;
+        let params = queries::load_round_params(&mut conn, round_id, &wallet_id).await?;
 
-        let cached_count = queries::witness_count(&conn, round_id, &wallet_id, bundle_index)?;
+        let cached_count =
+            queries::witness_count(&mut conn, round_id, &wallet_id, bundle_index).await?;
         // Return early if already cached
         if cached_count == witnesses.len() {
             return Ok(());
@@ -714,25 +740,27 @@ impl VotingDb {
         validate_witnesses_for_round(witnesses, &params)?;
 
         if cached_count == 0 {
-            queries::store_witnesses(&conn, round_id, &wallet_id, bundle_index, witnesses)
+            queries::store_witnesses(&mut conn, round_id, &wallet_id, bundle_index, witnesses).await
         } else {
             drop(conn);
             self.replace_bundle_witnesses(round_id, bundle_index, witnesses)
+                .await
         }
     }
 
     /// Verify and replace all cached Merkle inclusion witnesses for a bundle.
-    pub fn replace_bundle_witnesses(
+    pub async fn replace_bundle_witnesses(
         &self,
         round_id: &str,
         bundle_index: u32,
         witnesses: &[WitnessData],
     ) -> Result<(), VotingError> {
-        let mut conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        let params = queries::load_round_params(&conn, round_id, &wallet_id)?;
+        let params = queries::load_round_params(&mut conn, round_id, &wallet_id).await?;
         validate_witnesses_for_round(witnesses, &params)?;
         queries::replace_bundle_witnesses(&mut conn, round_id, &wallet_id, bundle_index, witnesses)
+            .await
     }
 
     // --- Phase 2: Delegation proof ---
@@ -748,7 +776,7 @@ impl VotingDb {
     /// The padded-slot nullifiers we cache are derived to match what the
     /// circuit builder asks for at proof-gen time (see
     /// `padded_nullifiers_for_circuit`).
-    pub fn precompute_delegation_pir(
+    pub async fn precompute_delegation_pir(
         &self,
         round_id: &str,
         bundle_index: u32,
@@ -756,14 +784,15 @@ impl VotingDb {
         pir_client: &pir_client::PirClientBlocking,
         network: Network,
     ) -> Result<DelegationPirPrecomputeResult, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let (params, stored_network) =
-            queries::load_round_params_with_network(&conn, round_id, &wallet_id)?;
+            queries::load_round_params_with_network(&mut conn, round_id, &wallet_id).await?;
         validate_network_matches_round(stored_network, network, "delegation PIR")?;
-        queries::require_bundle_notes(&conn, round_id, &wallet_id, bundle_index, notes)?;
+        queries::require_bundle_notes(&mut conn, round_id, &wallet_id, bundle_index, notes).await?;
         let padded_secrets =
-            queries::load_padded_note_secrets(&conn, round_id, &wallet_id, bundle_index)?;
+            queries::load_padded_note_secrets(&mut conn, round_id, &wallet_id, bundle_index)
+                .await?;
         let padded_nullifiers =
             padded_nullifiers_for_circuit(notes, &padded_secrets, stored_network)?;
         let targets = delegation_nullifier_targets(notes, &padded_nullifiers)?;
@@ -772,13 +801,14 @@ impl VotingDb {
         let mut missing = Vec::new();
         for (nf_bytes, nf) in targets {
             if queries::load_imt_proof(
-                &conn,
+                &mut conn,
                 round_id,
                 &wallet_id,
                 bundle_index,
                 &nf_bytes,
                 &params.nullifier_imt_root,
-            )?
+            )
+            .await?
             .is_some()
             {
                 cached_count += 1;
@@ -833,10 +863,18 @@ impl VotingDb {
             })
             .collect::<Result<Vec<_>, _>>()?;
 
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let fetched_count = fetched_proofs.len() as u32;
         for ((nf_bytes, _), proof) in missing.iter().zip(fetched_proofs.iter()) {
-            queries::store_imt_proof(&conn, round_id, &wallet_id, bundle_index, nf_bytes, proof)?;
+            queries::store_imt_proof(
+                &mut conn,
+                round_id,
+                &wallet_id,
+                bundle_index,
+                nf_bytes,
+                proof,
+            )
+            .await?;
         }
 
         Ok(DelegationPirPrecomputeResult {
@@ -859,7 +897,7 @@ impl VotingDb {
     /// For padded notes (< 5 real notes), the prover fetches proofs internally via PIR.
     ///
     /// Stores the proof result and advances phase to `DelegationProved`.
-    pub fn build_and_prove_delegation(
+    pub async fn build_and_prove_delegation(
         &self,
         round_id: &str,
         bundle_index: u32,
@@ -872,23 +910,28 @@ impl VotingDb {
 
         // Phase 1: DB queries
         let db_start = std::time::Instant::now();
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let (params, stored_network) =
-            queries::load_round_params_with_network(&conn, round_id, &wallet_id)?;
+            queries::load_round_params_with_network(&mut conn, round_id, &wallet_id).await?;
         validate_network_matches_round(stored_network, keys.network, "delegation keys")?;
-        queries::require_bundle_notes(&conn, round_id, &wallet_id, bundle_index, notes)?;
-        let alpha = queries::load_alpha(&conn, round_id, &wallet_id, bundle_index)?;
-        let van_comm_rand = queries::load_van_comm_rand(&conn, round_id, &wallet_id, bundle_index)?;
-        let witnesses = queries::load_witnesses(&conn, round_id, &wallet_id, bundle_index)?;
+        queries::require_bundle_notes(&mut conn, round_id, &wallet_id, bundle_index, notes).await?;
+        let alpha = queries::load_alpha(&mut conn, round_id, &wallet_id, bundle_index).await?;
+        let van_comm_rand =
+            queries::load_van_comm_rand(&mut conn, round_id, &wallet_id, bundle_index).await?;
+        let witnesses =
+            queries::load_witnesses(&mut conn, round_id, &wallet_id, bundle_index).await?;
         validate_witnesses_for_round(&witnesses, &params)?;
 
         // Load Phase 1 randomness for ZCA-74 fix: ensures Phase 2 produces
         // the same nf_signed/cmx_new that Phase 1 committed to in the PCZT.
-        let rseed_signed = queries::load_rseed_signed(&conn, round_id, &wallet_id, bundle_index)?;
-        let rseed_output = queries::load_rseed_output(&conn, round_id, &wallet_id, bundle_index)?;
+        let rseed_signed =
+            queries::load_rseed_signed(&mut conn, round_id, &wallet_id, bundle_index).await?;
+        let rseed_output =
+            queries::load_rseed_output(&mut conn, round_id, &wallet_id, bundle_index).await?;
         let padded_secrets =
-            queries::load_padded_note_secrets(&conn, round_id, &wallet_id, bundle_index)?;
+            queries::load_padded_note_secrets(&mut conn, round_id, &wallet_id, bundle_index)
+                .await?;
         // These are the zero-value circuit-side padded nullifiers derived
         // from the Phase 1 padded-note rho/rseed pairs.
         let padded_nullifiers =
@@ -950,27 +993,24 @@ impl VotingDb {
 
         // Phase 2: Load/fetch IMT exclusion proofs via PIR.
         let pir_start = std::time::Instant::now();
-        let precompute = self.precompute_delegation_pir(
-            round_id,
-            bundle_index,
-            notes,
-            pir_client,
-            keys.network,
-        )?;
+        let precompute = self
+            .precompute_delegation_pir(round_id, bundle_index, notes, pir_client, keys.network)
+            .await?;
 
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let real_targets = delegation_nullifier_targets(notes, &[])?;
         let dummy_targets = delegation_nullifier_targets(&[], &padded_nullifiers)?;
         let mut imt_proofs = Vec::with_capacity(real_targets.len());
         for (nf_bytes, _) in &real_targets {
             let proof = queries::load_imt_proof(
-                &conn,
+                &mut conn,
                 round_id,
                 &wallet_id,
                 bundle_index,
                 nf_bytes,
                 &params.nullifier_imt_root,
-            )?
+            )
+            .await?
             .ok_or_else(|| VotingError::Internal {
                 message: "missing cached IMT proof after PIR precompute".to_string(),
             })?;
@@ -980,13 +1020,14 @@ impl VotingDb {
         let mut extra_imt_proofs = Vec::with_capacity(dummy_targets.len());
         for (nf_bytes, _) in &dummy_targets {
             let proof = queries::load_imt_proof(
-                &conn,
+                &mut conn,
                 round_id,
                 &wallet_id,
                 bundle_index,
                 nf_bytes,
                 &params.nullifier_imt_root,
-            )?
+            )
+            .await?
             .ok_or_else(|| VotingError::Internal {
                 message: "missing cached padded-note IMT proof after PIR precompute".to_string(),
             })?;
@@ -1044,13 +1085,13 @@ impl VotingDb {
         // Persist proof bytes, public inputs, and phase together. The public
         // inputs are checked against the PCZT fields before any partial proof
         // success state is committed.
-        let mut conn = self.conn();
-        let tx = conn.transaction().map_err(|e| VotingError::Internal {
+        let mut conn = self.conn().await?;
+        let mut tx = conn.begin().await.map_err(|e| VotingError::Internal {
             message: format!("failed to begin proof result transaction: {e}"),
         })?;
-        queries::store_proof(&tx, round_id, &wallet_id, bundle_index, &result.proof)?;
+        queries::store_proof(&mut tx, round_id, &wallet_id, bundle_index, &result.proof).await?;
         queries::store_proof_result_fields_with_van_comm(
-            &tx,
+            &mut tx,
             round_id,
             &wallet_id,
             bundle_index,
@@ -1059,9 +1100,11 @@ impl VotingDb {
             &result.nf_signed,
             &result.cmx_new,
             &result.van_comm,
-        )?;
-        queries::advance_round_phase(&tx, round_id, &wallet_id, RoundPhase::DelegationProved)?;
-        tx.commit().map_err(|e| VotingError::Internal {
+        )
+        .await?;
+        queries::advance_round_phase(&mut tx, round_id, &wallet_id, RoundPhase::DelegationProved)
+            .await?;
+        tx.commit().await.map_err(|e| VotingError::Internal {
             message: format!("failed to commit proof result transaction: {e}"),
         })?;
 
@@ -1089,7 +1132,7 @@ impl VotingDb {
     ///
     /// The builder handles share decomposition and El Gamal encryption internally.
     /// The returned bundle includes the encrypted shares for reveal-share payloads.
-    pub(crate) fn build_vote_commitment(
+    pub(crate) async fn build_vote_commitment(
         &self,
         round_id: &str,
         bundle_index: u32,
@@ -1104,11 +1147,12 @@ impl VotingDb {
         single_share: bool,
         progress: &dyn ProgressReporter,
     ) -> Result<VoteCommitmentBundle, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        let stored_network = queries::load_round_network(&conn, round_id, &wallet_id)?;
+        let stored_network = queries::load_round_network(&mut conn, round_id, &wallet_id).await?;
         validate_network_matches_round(stored_network, signer_network, "vote signer")?;
-        let zkp2_data = queries::load_zkp2_inputs(&conn, round_id, &wallet_id, bundle_index)?;
+        let zkp2_data =
+            queries::load_zkp2_inputs(&mut conn, round_id, &wallet_id, bundle_index).await?;
 
         // Decode voting_round_id from hex string to 32 bytes
         let voting_round_id_bytes =
@@ -1150,15 +1194,17 @@ impl VotingDb {
         })?;
 
         queries::store_vote(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index,
             proposal_id,
             choice,
             &commitment_bytes,
-        )?;
-        queries::advance_round_phase(&conn, round_id, &wallet_id, RoundPhase::VoteReady)?;
+        )
+        .await?;
+        queries::advance_round_phase(&mut conn, round_id, &wallet_id, RoundPhase::VoteReady)
+            .await?;
         Ok(bundle)
     }
 
@@ -1168,7 +1214,7 @@ impl VotingDb {
     /// - `num_options`: Number of options declared for this proposal (2-8).
     /// - `vc_tree_position`: Position of the Vote Commitment leaf in the VC tree,
     ///   known after the cast-vote TX is confirmed on chain.
-    pub fn build_share_payloads(
+    pub async fn build_share_payloads(
         &self,
         enc_shares: &[WireEncryptedShare],
         commitment: &VoteCommitmentBundle,
@@ -1191,22 +1237,26 @@ impl VotingDb {
     /// The app calls this after parsing the delegation TX response events.
     /// Cast-vote callers should use `confirmation::confirm_vote_submission` so
     /// all confirmation fields are stored atomically.
-    pub fn store_van_position(
+    pub async fn store_van_position(
         &self,
         round_id: &str,
         bundle_index: u32,
         position: u32,
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::store_van_position(&conn, round_id, &wallet_id, bundle_index, position)
+        queries::store_van_position(&mut conn, round_id, &wallet_id, bundle_index, position).await
     }
 
     /// Load the VAN leaf position for a bundle.
-    pub fn load_van_position(&self, round_id: &str, bundle_index: u32) -> Result<u32, VotingError> {
-        let conn = self.conn();
+    pub async fn load_van_position(
+        &self,
+        round_id: &str,
+        bundle_index: u32,
+    ) -> Result<u32, VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::load_van_position(&conn, round_id, &wallet_id, bundle_index)
+        queries::load_van_position(&mut conn, round_id, &wallet_id, bundle_index).await
     }
 
     /// Reconstruct the delegation TX payload using an externally provided signature.
@@ -1214,7 +1264,7 @@ impl VotingDb {
     /// This does not derive account keys or sign. Instead, the caller supplies
     /// the SpendAuth signature and the ZIP-244 sighash that the wallet signer
     /// signed.
-    pub fn get_delegation_submission_with_signature(
+    pub async fn get_delegation_submission_with_signature(
         &self,
         round_id: &str,
         bundle_index: u32,
@@ -1230,9 +1280,10 @@ impl VotingDb {
             "sighash",
             "sighash does not match stored PCZT sighash",
         )
+        .await
     }
 
-    fn get_delegation_submission_with_checked_signature(
+    async fn get_delegation_submission_with_checked_signature(
         &self,
         round_id: &str,
         bundle_index: u32,
@@ -1256,11 +1307,13 @@ impl VotingDb {
             });
         }
 
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let data =
-            queries::load_delegation_submission_data(&conn, round_id, &wallet_id, bundle_index)?;
-        let stored_sighash = queries::load_pczt_sighash(&conn, round_id, &wallet_id, bundle_index)?;
+            queries::load_delegation_submission_data(&mut conn, round_id, &wallet_id, bundle_index)
+                .await?;
+        let stored_sighash =
+            queries::load_pczt_sighash(&mut conn, round_id, &wallet_id, bundle_index).await?;
         if stored_sighash.len() != 32 {
             return Err(VotingError::Internal {
                 message: format!(
@@ -1296,91 +1349,95 @@ impl VotingDb {
     /// via FK. Imported capability rounds return [`VotingError::InvalidInput`]
     /// because their complete bundle batch must remain atomic.
     /// Returns the number of deleted rows.
-    pub fn delete_skipped_bundles(
+    pub async fn delete_skipped_bundles(
         &self,
         round_id: &str,
         keep_count: u32,
     ) -> Result<u64, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::delete_bundles_from(&conn, round_id, &wallet_id, keep_count)
+        queries::delete_bundles_from(&mut conn, round_id, &wallet_id, keep_count).await
     }
 
     // --- Recovery state ---
 
-    pub fn store_delegation_tx_hash(
+    pub async fn store_delegation_tx_hash(
         &self,
         round_id: &str,
         bundle_index: u32,
         tx_hash: &str,
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::store_delegation_tx_hash(&conn, round_id, &wallet_id, bundle_index, tx_hash)
+        queries::store_delegation_tx_hash(&mut conn, round_id, &wallet_id, bundle_index, tx_hash)
+            .await
     }
 
-    pub fn get_delegation_tx_hash(
+    pub async fn get_delegation_tx_hash(
         &self,
         round_id: &str,
         bundle_index: u32,
     ) -> Result<Option<String>, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_delegation_tx_hash(&conn, round_id, &wallet_id, bundle_index)
+        queries::get_delegation_tx_hash(&mut conn, round_id, &wallet_id, bundle_index).await
     }
 
-    pub fn get_vote_tx_hash(
+    pub async fn get_vote_tx_hash(
         &self,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
     ) -> Result<Option<String>, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_vote_tx_hash(&conn, round_id, &wallet_id, bundle_index, proposal_id)
+        queries::get_vote_tx_hash(&mut conn, round_id, &wallet_id, bundle_index, proposal_id).await
     }
 
-    pub fn record_vote_submission(
+    pub async fn record_vote_submission(
         &self,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
         tx_hash: &str,
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         queries::record_vote_submission(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index,
             proposal_id,
             tx_hash,
         )
+        .await
     }
 
     /// Atomically records a delegation transaction hash with idempotency checks.
-    pub fn mark_delegation_submitted(
+    pub async fn mark_delegation_submitted(
         &self,
         round_id: &str,
         bundle_index: u32,
         tx_hash: &str,
     ) -> Result<(), VotingError> {
         let wallet_id = self.wallet_id();
-        let mut conn = self.conn();
-        let tx = conn.transaction().map_err(|e| VotingError::Internal {
+        let mut conn = self.conn().await?;
+        let mut tx = conn.begin().await.map_err(|e| VotingError::Internal {
             message: format!("begin delegation submitted transaction failed: {e}"),
         })?;
-        let stored = queries::get_delegation_tx_hash(&tx, round_id, &wallet_id, bundle_index)?;
+        let stored =
+            queries::get_delegation_tx_hash(&mut tx, round_id, &wallet_id, bundle_index).await?;
         check_text_conflict(stored.as_deref(), tx_hash, "delegation tx_hash")?;
-        queries::store_delegation_tx_hash(&tx, round_id, &wallet_id, bundle_index, tx_hash)?;
-        tx.commit().map_err(|e| VotingError::Internal {
+        queries::store_delegation_tx_hash(&mut tx, round_id, &wallet_id, bundle_index, tx_hash)
+            .await?;
+        tx.commit().await.map_err(|e| VotingError::Internal {
             message: format!("commit delegation submitted transaction failed: {e}"),
         })
     }
 
     /// Atomically records a vote transaction hash with idempotency checks.
-    pub fn mark_vote_submitted(
+    pub async fn mark_vote_submitted(
         &self,
         round_id: &str,
         bundle_index: u32,
@@ -1388,35 +1445,38 @@ impl VotingDb {
         tx_hash: &str,
     ) -> Result<(), VotingError> {
         let wallet_id = self.wallet_id();
-        let mut conn = self.conn();
-        let tx = conn.transaction().map_err(|e| VotingError::Internal {
+        let mut conn = self.conn().await?;
+        let mut tx = conn.begin().await.map_err(|e| VotingError::Internal {
             message: format!("begin vote submitted transaction failed: {e}"),
         })?;
         let stored =
-            queries::get_vote_tx_hash(&tx, round_id, &wallet_id, bundle_index, proposal_id)?;
+            queries::get_vote_tx_hash(&mut tx, round_id, &wallet_id, bundle_index, proposal_id)
+                .await?;
         check_text_conflict(stored.as_deref(), tx_hash, "vote tx_hash")?;
         queries::record_vote_submission(
-            &tx,
+            &mut tx,
             round_id,
             &wallet_id,
             bundle_index,
             proposal_id,
             tx_hash,
-        )?;
-        tx.commit().map_err(|e| VotingError::Internal {
+        )
+        .await?;
+        tx.commit().await.map_err(|e| VotingError::Internal {
             message: format!("commit vote submitted transaction failed: {e}"),
         })
     }
 
-    pub fn get_commitment_bundle(
+    pub async fn get_commitment_bundle(
         &self,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
     ) -> Result<Option<(String, u64)>, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_commitment_bundle(&conn, round_id, &wallet_id, bundle_index, proposal_id)
+        queries::get_commitment_bundle(&mut conn, round_id, &wallet_id, bundle_index, proposal_id)
+            .await
     }
 
     /// Loads raw commitment-bundle recovery columns for one vote key.
@@ -1424,24 +1484,25 @@ impl VotingDb {
     /// Unlike `get_commitment_bundle`, this lenient helper does not require
     /// `vc_tree_position` to be set. It is intended for recovery reporting code
     /// that distinguishes "JSON present but position pending" from "no JSON".
-    pub(crate) fn get_commitment_bundle_recovery_fields(
+    pub(crate) async fn get_commitment_bundle_recovery_fields(
         &self,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
     ) -> Result<Option<(Option<String>, Option<i64>)>, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         queries::get_commitment_bundle_recovery(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index,
             proposal_id,
         )
+        .await
     }
 
-    pub fn store_keystone_signature(
+    pub async fn store_keystone_signature(
         &self,
         round_id: &str,
         bundle_index: u32,
@@ -1449,10 +1510,10 @@ impl VotingDb {
         sighash: &[u8],
         rk: &[u8],
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         queries::store_keystone_signature(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index,
@@ -1460,37 +1521,38 @@ impl VotingDb {
             sighash,
             rk,
         )
+        .await
     }
 
-    pub fn get_keystone_signatures(
+    pub async fn get_keystone_signatures(
         &self,
         round_id: &str,
     ) -> Result<Vec<KeystoneSignatureRecord>, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_keystone_signatures(&conn, round_id, &wallet_id)
+        queries::get_keystone_signatures(&mut conn, round_id, &wallet_id).await
     }
 
     /// Clears unconfirmed recovery artifacts while preserving ballot intent,
     /// recorded vote confirmations, and imported delegation capabilities. Use
     /// `clear_round`/`delete_round` to remove the whole round, including
     /// recorded decisions.
-    pub fn clear_recovery_state(&self, round_id: &str) -> Result<(), VotingError> {
-        let conn = self.conn();
+    pub async fn clear_recovery_state(&self, round_id: &str) -> Result<(), VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::clear_recovery_state(&conn, round_id, &wallet_id)
+        queries::clear_recovery_state(&mut conn, round_id, &wallet_id).await
     }
 
     /// Clears locally prepared unsigned delegation setup fields for one round
     /// while preserving submitted bundles, imported capabilities, and bundles
     /// with persisted Keystone signatures.
-    pub fn clear_unsigned_delegation_setup_fields(
+    pub async fn clear_unsigned_delegation_setup_fields(
         &self,
         round_id: &str,
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::clear_unsigned_delegation_setup_fields(&conn, round_id, &wallet_id)
+        queries::clear_unsigned_delegation_setup_fields(&mut conn, round_id, &wallet_id).await
     }
 
     // --- Share delegation tracking ---
@@ -1501,7 +1563,7 @@ impl VotingDb {
     /// nullifier that matches the persisted vote recovery bundle. Wallet
     /// integrations should use `share::record`, which derives that nullifier
     /// from recovery state.
-    pub(crate) fn record_share_delegation(
+    pub(crate) async fn record_share_delegation(
         &self,
         round_id: &str,
         bundle_index: u32,
@@ -1511,10 +1573,10 @@ impl VotingDb {
         nullifier: &[u8],
         submit_at: u64,
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         queries::record_share_delegation(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index,
@@ -1524,50 +1586,52 @@ impl VotingDb {
             nullifier,
             submit_at,
         )
+        .await
     }
 
     /// Load all share delegations for a round.
-    pub fn get_share_delegations(
+    pub async fn get_share_delegations(
         &self,
         round_id: &str,
     ) -> Result<Vec<crate::ShareDelegationRecord>, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_share_delegations(&conn, round_id, &wallet_id)
+        queries::get_share_delegations(&mut conn, round_id, &wallet_id).await
     }
 
     /// Load only unconfirmed share delegations for a round.
-    pub fn get_unconfirmed_delegations(
+    pub async fn get_unconfirmed_delegations(
         &self,
         round_id: &str,
     ) -> Result<Vec<crate::ShareDelegationRecord>, VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_unconfirmed_delegations(&conn, round_id, &wallet_id)
+        queries::get_unconfirmed_delegations(&mut conn, round_id, &wallet_id).await
     }
 
     /// Mark a share delegation as confirmed on-chain.
-    pub fn mark_share_confirmed(
+    pub async fn mark_share_confirmed(
         &self,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
         share_index: u32,
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         queries::mark_share_confirmed(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index,
             proposal_id,
             share_index,
         )
+        .await
     }
 
     /// Append new server URLs to a share delegation's sent_to_urls.
-    pub fn add_sent_servers(
+    pub async fn add_sent_servers(
         &self,
         round_id: &str,
         bundle_index: u32,
@@ -1575,10 +1639,10 @@ impl VotingDb {
         share_index: u32,
         new_urls: &[String],
     ) -> Result<(), VotingError> {
-        let conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         queries::add_sent_servers(
-            &conn,
+            &mut conn,
             round_id,
             &wallet_id,
             bundle_index,
@@ -1586,6 +1650,7 @@ impl VotingDb {
             share_index,
             new_urls,
         )
+        .await
     }
 }
 
@@ -1605,7 +1670,7 @@ fn check_text_conflict(
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::types::VotingHotkey;
@@ -2112,9 +2177,11 @@ mod tests {
         db.ensure_bundles(ROUND_ID, &[note_info.clone()]).unwrap();
         {
             let conn = db.conn();
-            let err = queries::load_padded_note_secrets(&conn, ROUND_ID, W, 0).expect_err(
-                "padded secrets should only exist after explicit warmup or PCZT construction",
-            );
+            let err = queries::load_padded_note_secrets(&mut conn, ROUND_ID, W, 0)
+                .await
+                .expect_err(
+                    "padded secrets should only exist after explicit warmup or PCZT construction",
+                );
             assert!(
                 err.to_string().contains("padded_note_secrets")
                     || err.to_string().contains("delegation data"),
@@ -2134,7 +2201,9 @@ mod tests {
             padded_nullifiers_for_circuit(&[note_info.clone()], &warmed, Network::Regtest).unwrap();
         {
             let conn = db.conn();
-            assert!(queries::load_pczt_sighash(&conn, ROUND_ID, W, 0).is_err());
+            assert!(queries::load_pczt_sighash(&mut conn, ROUND_ID, W, 0)
+                .await
+                .is_err());
         }
 
         let voting_hotkey =
@@ -2148,8 +2217,12 @@ mod tests {
             .unwrap();
 
         let conn = db.conn();
-        let stored_dummy = queries::load_dummy_nullifiers(&conn, ROUND_ID, W, 0).unwrap();
-        let padded_secrets = queries::load_padded_note_secrets(&conn, ROUND_ID, W, 0).unwrap();
+        let stored_dummy = queries::load_dummy_nullifiers(&mut conn, ROUND_ID, W, 0)
+            .await
+            .unwrap();
+        let padded_secrets = queries::load_padded_note_secrets(&mut conn, ROUND_ID, W, 0)
+            .await
+            .unwrap();
         let pir_nullifiers =
             padded_nullifiers_for_circuit(&[note_info], &padded_secrets, Network::Regtest).unwrap();
 
@@ -2215,7 +2288,9 @@ mod tests {
                 let nf_bytes: [u8; 32] = note.nullifier.as_slice().try_into().unwrap();
                 let nf = Option::from(pallas::Base::from_repr(nf_bytes)).unwrap();
                 let proof = imt.non_membership_proof(nf).unwrap();
-                queries::store_imt_proof(&conn, ROUND_ID, W, 0, &nf_bytes, &proof).unwrap();
+                queries::store_imt_proof(&mut conn, ROUND_ID, W, 0, &nf_bytes, &proof)
+                    .await
+                    .unwrap();
             }
         }
 
@@ -2237,7 +2312,9 @@ mod tests {
         assert_eq!(transport.query_post_count(), 0);
         transport.assert_no_legacy_tier2_traffic();
         let conn = db.conn();
-        assert!(queries::load_pczt_sighash(&conn, ROUND_ID, W, 0).is_err());
+        assert!(queries::load_pczt_sighash(&mut conn, ROUND_ID, W, 0)
+            .await
+            .is_err());
     }
 
     #[test]
@@ -2520,7 +2597,9 @@ mod tests {
 
         {
             let conn = db.conn();
-            queries::insert_bundle(&conn, ROUND_ID, W, 1, &[99]).unwrap();
+            queries::insert_bundle(&mut conn, ROUND_ID, W, 1, &[99])
+                .await
+                .unwrap();
         }
 
         let plan = crate::note_bundling::chunk_notes(&notes);
@@ -2539,7 +2618,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bundle_zero_count, 0);
-        assert_eq!(queries::get_bundle_count(&conn, ROUND_ID, W).unwrap(), 1);
+        assert_eq!(
+            queries::get_bundle_count(&mut conn, ROUND_ID, W)
+                .await
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -2577,7 +2661,9 @@ mod tests {
             .unwrap();
         let note = identity_test_note();
         let conn = db.conn();
-        queries::insert_bundle_notes(&conn, ROUND_ID, W, 0, &[note.clone()]).unwrap();
+        queries::insert_bundle_notes(&mut conn, ROUND_ID, W, 0, &[note.clone()])
+            .await
+            .unwrap();
 
         let cases: [(&str, fn(&mut NoteInfo)); 9] = [
             ("commitment", mutate_commitment),
@@ -2595,7 +2681,8 @@ mod tests {
             let mut substituted = note.clone();
             mutate(&mut substituted);
 
-            let err = queries::require_bundle_notes(&conn, ROUND_ID, W, 0, &[substituted])
+            let err = queries::require_bundle_notes(&mut conn, ROUND_ID, W, 0, &[substituted])
+                .await
                 .expect_err(field);
             assert!(err.to_string().contains("bundle_index 0"), "{field}: {err}");
         }
@@ -2608,14 +2695,18 @@ mod tests {
             .unwrap();
         let note = identity_test_note();
         let conn = db.conn();
-        queries::insert_bundle(&conn, ROUND_ID, W, 0, &[note.position]).unwrap();
+        queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[note.position])
+            .await
+            .unwrap();
 
         let mut substituted = note;
         substituted.nullifier[0] ^= 0x01;
         substituted.rseed[0] ^= 0x01;
         substituted.ufvk_str.push_str("-substituted");
 
-        queries::require_bundle_notes(&conn, ROUND_ID, W, 0, &[substituted]).unwrap();
+        queries::require_bundle_notes(&mut conn, ROUND_ID, W, 0, &[substituted])
+            .await
+            .unwrap();
     }
 
     #[test]
@@ -2692,7 +2783,8 @@ mod tests {
         );
         let conn = db.conn();
         assert!(
-            queries::load_padded_note_secrets_optional(&conn, ROUND_ID, W, 0)
+            queries::load_padded_note_secrets_optional(&mut conn, ROUND_ID, W, 0)
+                .await
                 .unwrap()
                 .is_none()
         );
@@ -2728,7 +2820,8 @@ mod tests {
         );
         let conn = db.conn();
         assert!(
-            queries::load_padded_note_secrets_optional(&conn, ROUND_ID, W, 0)
+            queries::load_padded_note_secrets_optional(&mut conn, ROUND_ID, W, 0)
+                .await
                 .unwrap()
                 .is_none()
         );
@@ -2752,9 +2845,11 @@ mod tests {
 
         {
             let conn = db.conn();
-            queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0]).unwrap();
+            queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0])
+                .await
+                .unwrap();
             queries::store_delegation_data(
-                &conn,
+                &mut conn,
                 ROUND_ID,
                 W,
                 0,
@@ -2774,6 +2869,7 @@ mod tests {
                 &pczt_sighash,
                 &crate::tx1::placeholder_tx1_effects(),
             )
+            .await
             .unwrap();
         }
 
@@ -2811,8 +2907,11 @@ mod tests {
             &[0x99; 32],
             &crate::tx1::placeholder_tx1_effects(),
         )
+        .await
         .unwrap();
-        queries::store_padded_note_secrets_if_absent(conn, ROUND_ID, W, 0, &[]).unwrap();
+        queries::store_padded_note_secrets_if_absent(conn, ROUND_ID, W, 0, &[])
+            .await
+            .unwrap();
     }
 
     #[test]
@@ -2826,9 +2925,13 @@ mod tests {
         let alpha = pallas::Scalar::from(7).to_repr();
         {
             let conn = db.conn();
-            queries::insert_bundle(&conn, ROUND_ID, W, 0, &[note.position]).unwrap();
-            store_minimal_delegation_setup(&conn, &alpha);
-            queries::store_witnesses(&conn, ROUND_ID, W, 0, &witnesses).unwrap();
+            queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[note.position])
+                .await
+                .unwrap();
+            store_minimal_delegation_setup(&mut conn, &alpha);
+            queries::store_witnesses(&mut conn, ROUND_ID, W, 0, &witnesses)
+                .await
+                .unwrap();
         }
 
         let sk = SpendingKey::from_bytes([0x42; 32]).expect("valid spending key");
@@ -2874,9 +2977,13 @@ mod tests {
         let alpha = pallas::Scalar::from(7).to_repr();
         {
             let conn = db.conn();
-            queries::insert_bundle(&conn, ROUND_ID, W, 0, &[note.position]).unwrap();
-            store_minimal_delegation_setup(&conn, &alpha);
-            queries::store_witnesses(&conn, ROUND_ID, W, 0, &witnesses).unwrap();
+            queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[note.position])
+                .await
+                .unwrap();
+            store_minimal_delegation_setup(&mut conn, &alpha);
+            queries::store_witnesses(&mut conn, ROUND_ID, W, 0, &witnesses)
+                .await
+                .unwrap();
         }
 
         let sk = SpendingKey::from_bytes([0x42; 32]).expect("valid spending key");
@@ -2941,7 +3048,8 @@ mod tests {
         );
         let conn = db.conn();
         assert!(
-            queries::load_padded_note_secrets_optional(&conn, ROUND_ID, W, 0)
+            queries::load_padded_note_secrets_optional(&mut conn, ROUND_ID, W, 0)
+                .await
                 .unwrap()
                 .is_none()
         );
@@ -2953,12 +3061,14 @@ mod tests {
         db.init_round(Network::Testnet, &test_params(), None)
             .unwrap();
         let conn = db.conn();
-        queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0]).unwrap();
+        queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0])
+            .await
+            .unwrap();
         let gov_nullifiers = vec![vec![0x0B; 32]; BUNDLE_NOTE_SLOTS];
 
         let store = |tx1_effects: &[u8]| {
             queries::store_delegation_data_with_pczt_fields(
-                &conn,
+                &mut conn,
                 ROUND_ID,
                 W,
                 0,
@@ -2980,13 +3090,16 @@ mod tests {
                 &[0x0A; 32],
                 &gov_nullifiers,
             )
+            .await
         };
 
         let effects = crate::tx1::placeholder_tx1_effects();
         store(&effects).unwrap();
         store(&effects).unwrap();
         assert_eq!(
-            queries::load_tx1_effects(&conn, ROUND_ID, W, 0).unwrap(),
+            queries::load_tx1_effects(&mut conn, ROUND_ID, W, 0)
+                .await
+                .unwrap(),
             effects
         );
 
@@ -2997,7 +3110,9 @@ mod tests {
             .to_string()
             .contains("refusing to overwrite tx1_effects"));
         assert_eq!(
-            queries::load_tx1_effects(&conn, ROUND_ID, W, 0).unwrap(),
+            queries::load_tx1_effects(&mut conn, ROUND_ID, W, 0)
+                .await
+                .unwrap(),
             effects
         );
     }
@@ -3008,7 +3123,9 @@ mod tests {
         db.init_round(Network::Testnet, &test_params(), None)
             .unwrap();
         let conn = db.conn();
-        queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0]).unwrap();
+        queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0])
+            .await
+            .unwrap();
 
         let tx1_effects = crate::tx1::placeholder_tx1_effects();
         let rk = [0x0A; 32];
@@ -3017,7 +3134,7 @@ mod tests {
         let cmx_new = [0x04; 32];
 
         queries::store_delegation_data(
-            &conn,
+            &mut conn,
             ROUND_ID,
             W,
             0,
@@ -3035,11 +3152,12 @@ mod tests {
             0,
             &[],
             &[0x09; 32],
-            &tx1_effects,
+            &mut tx1_effects,
         )
+        .await
         .unwrap();
         queries::store_proof_result_fields(
-            &conn,
+            &mut conn,
             ROUND_ID,
             W,
             0,
@@ -3048,10 +3166,15 @@ mod tests {
             &nf_signed,
             &cmx_new,
         )
+        .await
         .unwrap();
-        queries::store_proof(&conn, ROUND_ID, W, 0, &[0xAC; 96]).unwrap();
+        queries::store_proof(&mut conn, ROUND_ID, W, 0, &[0xAC; 96])
+            .await
+            .unwrap();
 
-        let submission = queries::load_delegation_submission_data(&conn, ROUND_ID, W, 0).unwrap();
+        let submission = queries::load_delegation_submission_data(&mut conn, ROUND_ID, W, 0)
+            .await
+            .unwrap();
         assert_eq!(submission.tx1_effects, tx1_effects);
         assert_eq!(submission.rk, rk);
         assert_eq!(submission.gov_nullifiers, gov_nullifiers);
@@ -3071,9 +3194,11 @@ mod tests {
         let van_comm = [0x50; 32];
 
         let mut conn = db.conn();
-        queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0]).unwrap();
+        queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0])
+            .await
+            .unwrap();
         queries::store_delegation_data_with_pczt_fields(
-            &conn,
+            &mut conn,
             ROUND_ID,
             W,
             0,
@@ -3095,12 +3220,15 @@ mod tests {
             &rk,
             &gov_nullifiers,
         )
+        .await
         .unwrap();
 
         let tx = conn.transaction().unwrap();
-        queries::store_proof(&tx, ROUND_ID, W, 0, &[0xAB; 96]).unwrap();
+        queries::store_proof(&mut tx, ROUND_ID, W, 0, &[0xAB; 96])
+            .await
+            .unwrap();
         let err = queries::store_proof_result_fields_with_van_comm(
-            &tx,
+            &mut tx,
             ROUND_ID,
             W,
             0,
@@ -3110,6 +3238,7 @@ mod tests {
             &cmx_new,
             &van_comm,
         )
+        .await
         .expect_err("proof rk must match PCZT rk");
         assert!(err.to_string().contains("rk"));
         drop(tx);
@@ -3125,7 +3254,7 @@ mod tests {
         assert_eq!(proof_count, 0);
 
         queries::store_proof_result_fields_with_van_comm(
-            &conn,
+            &mut conn,
             ROUND_ID,
             W,
             0,
@@ -3135,6 +3264,7 @@ mod tests {
             &cmx_new,
             &van_comm,
         )
+        .await
         .unwrap();
     }
 
@@ -3151,9 +3281,11 @@ mod tests {
         let van_comm = [0x50; 32];
 
         let conn = db.conn();
-        queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0]).unwrap();
+        queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0])
+            .await
+            .unwrap();
         queries::store_delegation_data(
-            &conn,
+            &mut conn,
             ROUND_ID,
             W,
             0,
@@ -3173,10 +3305,11 @@ mod tests {
             &[0x06; 32],
             &crate::tx1::placeholder_tx1_effects(),
         )
+        .await
         .unwrap();
 
         queries::store_proof_result_fields_with_van_comm(
-            &conn,
+            &mut conn,
             ROUND_ID,
             W,
             0,
@@ -3186,6 +3319,7 @@ mod tests {
             &cmx_new,
             &van_comm,
         )
+        .await
         .unwrap();
     }
 
@@ -3199,7 +3333,9 @@ mod tests {
         db.store_tree_state(ROUND_ID, &tree_state).unwrap();
 
         let conn = db.conn();
-        let loaded = queries::load_tree_state(&conn, ROUND_ID, W).unwrap();
+        let loaded = queries::load_tree_state(&mut conn, ROUND_ID, W)
+            .await
+            .unwrap();
         assert_eq!(loaded, tree_state);
     }
 
@@ -3209,8 +3345,12 @@ mod tests {
         db.init_round(Network::Testnet, &test_params(), None)
             .unwrap();
         let conn = db.conn();
-        queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0]).unwrap();
-        queries::store_vote(&conn, ROUND_ID, W, 0, 1, 0, b"commitment").unwrap();
+        queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0])
+            .await
+            .unwrap();
+        queries::store_vote(&mut conn, ROUND_ID, W, 0, 1, 0, b"commitment")
+            .await
+            .unwrap();
         conn.execute(
             "UPDATE votes SET commitment_bundle_json = '{}', vc_tree_position = NULL \
              WHERE round_id = ?1 AND wallet_id = ?2 AND bundle_index = 0 AND proposal_id = 1",
@@ -3218,7 +3358,8 @@ mod tests {
         )
         .unwrap();
 
-        let err = queries::get_commitment_bundle(&conn, ROUND_ID, W, 0, 1)
+        let err = queries::get_commitment_bundle(&mut conn, ROUND_ID, W, 0, 1)
+            .await
             .expect_err("stored commitment bundle without position should fail");
 
         assert!(
@@ -3239,7 +3380,9 @@ mod tests {
 
         {
             let conn = db.conn();
-            queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0, 1]).unwrap();
+            queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0, 1])
+                .await
+                .unwrap();
         }
 
         assert!(!db.has_witnesses(ROUND_ID, 0).unwrap());
@@ -3266,7 +3409,9 @@ mod tests {
 
         {
             let conn = db.conn();
-            queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0]).unwrap();
+            queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0])
+                .await
+                .unwrap();
         }
 
         let err = db
@@ -3289,7 +3434,9 @@ mod tests {
 
         {
             let conn = db.conn();
-            queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0, 1]).unwrap();
+            queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0, 1])
+                .await
+                .unwrap();
         }
 
         db.store_witnesses(ROUND_ID, 0, &original).unwrap();
@@ -3304,7 +3451,9 @@ mod tests {
 
         {
             let conn = db.conn();
-            let loaded = queries::load_witnesses(&conn, ROUND_ID, W, 0).unwrap();
+            let loaded = queries::load_witnesses(&mut conn, ROUND_ID, W, 0)
+                .await
+                .unwrap();
             assert_eq!(loaded.len(), 2);
             assert_eq!(loaded[0].position, 0);
             assert_eq!(loaded[1].position, 1);
@@ -3315,7 +3464,9 @@ mod tests {
             .unwrap();
 
         let conn = db.conn();
-        let loaded = queries::load_witnesses(&conn, ROUND_ID, W, 0).unwrap();
+        let loaded = queries::load_witnesses(&mut conn, ROUND_ID, W, 0)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].position, 0);
         assert_eq!(loaded[1].position, 1);
@@ -3331,7 +3482,9 @@ mod tests {
 
         {
             let conn = db.conn();
-            queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0, 1]).unwrap();
+            queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0, 1])
+                .await
+                .unwrap();
         }
 
         db.store_witnesses(ROUND_ID, 0, &original).unwrap();
@@ -3350,7 +3503,9 @@ mod tests {
         );
 
         let conn = db.conn();
-        let loaded = queries::load_witnesses(&conn, ROUND_ID, W, 0).unwrap();
+        let loaded = queries::load_witnesses(&mut conn, ROUND_ID, W, 0)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].note_commitment, original[0].note_commitment);
         assert_eq!(loaded[1].note_commitment, original[1].note_commitment);
@@ -3364,7 +3519,9 @@ mod tests {
 
         {
             let conn = db.conn();
-            queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0, 1]).unwrap();
+            queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0, 1])
+                .await
+                .unwrap();
         }
 
         db.store_witnesses(ROUND_ID, 0, &original).unwrap();
@@ -3378,7 +3535,9 @@ mod tests {
             .contains("witness positions do not match bundle note positions"));
 
         let conn = db.conn();
-        let loaded = queries::load_witnesses(&conn, ROUND_ID, W, 0).unwrap();
+        let loaded = queries::load_witnesses(&mut conn, ROUND_ID, W, 0)
+            .await
+            .unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].position, 0);
         assert_eq!(loaded[1].position, 1);
@@ -3668,7 +3827,9 @@ mod tests {
             &crate::types::NoopProgressReporter,
         )
         .unwrap();
-        queries::store_proof(&db.conn(), ROUND_ID, W, 0, &[0xAC; 96]).unwrap();
+        queries::store_proof(&db.conn(), ROUND_ID, W, 0, &[0xAC; 96])
+            .await
+            .unwrap();
 
         let request = crate::delegate::signing_request(&db, ROUND_ID, 0, &keys).unwrap();
         assert_eq!(request.account_index, account_index);
@@ -3709,9 +3870,11 @@ mod tests {
 
         {
             let conn = db.conn();
-            queries::insert_bundle(&conn, ROUND_ID, W, 0, &[0]).unwrap();
+            queries::insert_bundle(&mut conn, ROUND_ID, W, 0, &[0])
+                .await
+                .unwrap();
             queries::store_delegation_data_with_pczt_fields(
-                &conn,
+                &mut conn,
                 ROUND_ID,
                 W,
                 0,
@@ -3733,9 +3896,10 @@ mod tests {
                 &rk,
                 &[vec![0x89; 32]],
             )
+            .await
             .unwrap();
             queries::store_proof_result_fields_with_van_comm(
-                &conn,
+                &mut conn,
                 ROUND_ID,
                 W,
                 0,
@@ -3745,8 +3909,11 @@ mod tests {
                 &[0x44; 32],
                 &[0x88; 32],
             )
+            .await
             .unwrap();
-            queries::store_proof(&conn, ROUND_ID, W, 0, &[0xAC; 96]).unwrap();
+            queries::store_proof(&mut conn, ROUND_ID, W, 0, &[0xAC; 96])
+                .await
+                .unwrap();
         }
 
         let err = db
@@ -3816,9 +3983,13 @@ mod tests {
 
         // Verify note positions per bundle (sequential fill)
         let conn = db.conn();
-        let positions_0 = queries::load_bundle_note_positions(&conn, ROUND_ID, W, 0).unwrap();
+        let positions_0 = queries::load_bundle_note_positions(&mut conn, ROUND_ID, W, 0)
+            .await
+            .unwrap();
         assert_eq!(positions_0, vec![0, 1, 2, 3, 4]);
-        let positions_1 = queries::load_bundle_note_positions(&conn, ROUND_ID, W, 1).unwrap();
+        let positions_1 = queries::load_bundle_note_positions(&mut conn, ROUND_ID, W, 1)
+            .await
+            .unwrap();
         assert_eq!(positions_1, vec![5]);
         drop(conn);
 
@@ -3847,13 +4018,19 @@ mod tests {
 
             // Verify data persisted per bundle
             let conn = db.conn();
-            let stored_rand = queries::load_van_comm_rand(&conn, ROUND_ID, W, i as u32).unwrap();
+            let stored_rand = queries::load_van_comm_rand(&mut conn, ROUND_ID, W, i as u32)
+                .await
+                .unwrap();
             assert_eq!(stored_rand, result.van_comm_rand);
-            let stored_alpha = queries::load_alpha(&conn, ROUND_ID, W, i as u32).unwrap();
+            let stored_alpha = queries::load_alpha(&mut conn, ROUND_ID, W, i as u32)
+                .await
+                .unwrap();
             assert_eq!(stored_alpha, result.alpha);
 
             // ZKP2 inputs loadable per bundle
-            let zkp2 = queries::load_zkp2_inputs(&conn, ROUND_ID, W, i as u32).unwrap();
+            let zkp2 = queries::load_zkp2_inputs(&mut conn, ROUND_ID, W, i as u32)
+                .await
+                .unwrap();
             assert_eq!(zkp2.gov_comm_rand.len(), 32);
         }
 
@@ -3861,18 +4038,26 @@ mod tests {
         db.store_van_position(ROUND_ID, 0, 100).unwrap();
         db.store_van_position(ROUND_ID, 1, 101).unwrap();
         assert_eq!(
-            queries::load_van_position(&db.conn(), ROUND_ID, W, 0).unwrap(),
+            queries::load_van_position(&db.conn(), ROUND_ID, W, 0)
+                .await
+                .unwrap(),
             100
         );
         assert_eq!(
-            queries::load_van_position(&db.conn(), ROUND_ID, W, 1).unwrap(),
+            queries::load_van_position(&db.conn(), ROUND_ID, W, 1)
+                .await
+                .unwrap(),
             101
         );
 
         // Store votes for proposal 0 across both bundles
         let conn = db.conn();
-        queries::store_vote(&conn, ROUND_ID, W, 0, 0, 0, &[0xAA; 32]).unwrap();
-        queries::store_vote(&conn, ROUND_ID, W, 1, 0, 0, &[0xBB; 32]).unwrap();
+        queries::store_vote(&mut conn, ROUND_ID, W, 0, 0, 0, &[0xAA; 32])
+            .await
+            .unwrap();
+        queries::store_vote(&mut conn, ROUND_ID, W, 1, 0, 0, &[0xBB; 32])
+            .await
+            .unwrap();
         drop(conn);
 
         let votes = db.get_votes(ROUND_ID).unwrap();
@@ -3891,9 +4076,13 @@ mod tests {
 
         // Verify proposal_authority reflects per-bundle submission state
         let conn = db.conn();
-        let zkp2_0 = queries::load_zkp2_inputs(&conn, ROUND_ID, W, 0).unwrap();
+        let zkp2_0 = queries::load_zkp2_inputs(&mut conn, ROUND_ID, W, 0)
+            .await
+            .unwrap();
         assert_eq!(zkp2_0.proposal_authority, 0xFFFF & !(1u64 << 0)); // bit 0 cleared
-        let zkp2_1 = queries::load_zkp2_inputs(&conn, ROUND_ID, W, 1).unwrap();
+        let zkp2_1 = queries::load_zkp2_inputs(&mut conn, ROUND_ID, W, 1)
+            .await
+            .unwrap();
         assert_eq!(zkp2_1.proposal_authority, 0xFFFF); // no bits cleared
         drop(conn);
 

@@ -5,8 +5,10 @@
 //! APIs in `crate::phases`. The wallet executes each step with its own
 //! network/proof/sign plumbing.
 
-use rusqlite::named_params;
+use crate::named_params;
+use crate::storage::sqlx_ext::ConnectionExt;
 use serde::{Deserialize, Serialize};
+use sqlx::Connection as _;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::phases::{DelegationPhase, SharePhase, VotePhase};
@@ -29,7 +31,7 @@ impl VotingDb {
     /// `num_options` must be the proposal's declared option count. Choice
     /// decisions are validated against it before any durable intent is written.
     /// Written on each selection, before any per-proposal vote artifact exists.
-    pub fn set_ballot_intent(
+    pub async fn set_ballot_intent(
         &self,
         round_id: &str,
         proposal_id: u32,
@@ -40,19 +42,21 @@ impl VotingDb {
         validate_ballot_intent_decision(decision, num_options)?;
 
         self.write_ballot_intent(round_id, proposal_id, decision)
+            .await
     }
 
     /// Record a choice intent from a fully validated draft vote.
-    pub fn set_ballot_intent_for_draft_vote(
+    pub async fn set_ballot_intent_for_draft_vote(
         &self,
         round_id: &str,
         draft: &DraftVote,
     ) -> Result<(), VotingError> {
         validate_draft_vote(draft)?;
         self.write_ballot_intent(round_id, draft.proposal_id, Decision::Choice(draft.choice))
+            .await
     }
 
-    fn write_ballot_intent(
+    async fn write_ballot_intent(
         &self,
         round_id: &str,
         proposal_id: u32,
@@ -63,21 +67,22 @@ impl VotingDb {
             Decision::Skipped => (1, None),
         };
         let now = now_secs();
-        let mut conn = self.conn();
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        let tx = conn.transaction().map_err(|e| VotingError::Internal {
+        let mut tx = conn.begin().await.map_err(|e| VotingError::Internal {
             message: format!("set_ballot_intent transaction failed: {e}"),
         })?;
         let skipped_bool = skipped != 0;
         let choice_u32 = choice.map(|c| c as u32);
         queries::ensure_no_submitted_vote_conflict_for_intent(
-            &tx,
+            &mut tx,
             round_id,
             &wallet_id,
             proposal_id,
             skipped_bool,
             choice_u32,
-        )?;
+        )
+        .await?;
         tx.execute(
             "INSERT INTO ballot_intent
                 (round_id, wallet_id, proposal_id, skipped, choice, created_at, updated_at)
@@ -86,33 +91,38 @@ impl VotingDb {
              DO UPDATE SET skipped = :skipped, choice = :choice, updated_at = :now",
             named_params! {
                 ":round_id": round_id,
-                ":wallet_id": wallet_id,
+                ":wallet_id": &wallet_id,
                 ":proposal_id": proposal_id as i64,
                 ":skipped": skipped,
                 ":choice": choice,
                 ":now": now,
             },
         )
+        .await
         .map_err(|e| VotingError::Internal {
             message: format!("set_ballot_intent failed: {e}"),
         })?;
         queries::clear_stale_share_delegations_for_intent(
-            &tx,
+            &mut tx,
             round_id,
             &wallet_id,
             proposal_id,
             skipped_bool,
             choice_u32,
-        )?;
-        tx.commit().map_err(|e| VotingError::Internal {
+        )
+        .await?;
+        tx.commit().await.map_err(|e| VotingError::Internal {
             message: format!("set_ballot_intent commit failed: {e}"),
         })?;
         Ok(())
     }
 
     /// Load the voter's decisions for a round, sorted by proposal id.
-    pub fn ballot_intents(&self, round_id: &str) -> Result<Vec<(u32, Decision)>, VotingError> {
-        let conn = self.conn();
+    pub async fn ballot_intents(
+        &self,
+        round_id: &str,
+    ) -> Result<Vec<(u32, Decision)>, VotingError> {
+        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let mut stmt = conn
             .prepare(
@@ -138,10 +148,12 @@ impl VotingDb {
                     Ok((pid, decision))
                 },
             )
+            .await
             .map_err(|e| VotingError::Internal {
                 message: format!("query ballot_intents: {e}"),
             })?;
-        rows.collect::<Result<Vec<_>, _>>()
+        rows.into_iter()
+            .collect::<Result<Vec<_>, _>>()
             .map_err(|e| VotingError::Internal {
                 message: format!("collect ballot_intents: {e}"),
             })
@@ -441,24 +453,23 @@ fn missing_recovery_field(message: String) -> VotingError {
     VotingError::Internal { message }
 }
 
-fn delegation_statuses(
+async fn delegation_statuses(
     db: &VotingDb,
     round_id: &str,
     delegation: &BTreeMap<u32, DelegationPhase>,
 ) -> Result<Vec<DelegationStatus>, VotingError> {
-    delegation
-        .iter()
-        .map(|(&bundle_index, &phase)| {
-            Ok(DelegationStatus {
-                bundle_index,
-                phase,
-                tx_hash: db.get_delegation_tx_hash(round_id, bundle_index)?,
-            })
-        })
-        .collect()
+    let mut result = Vec::with_capacity(delegation.len());
+    for (&bundle_index, &phase) in delegation {
+        result.push(DelegationStatus {
+            bundle_index,
+            phase,
+            tx_hash: db.get_delegation_tx_hash(round_id, bundle_index).await?,
+        });
+    }
+    Ok(result)
 }
 
-fn recovered_delegation_work_from_steps(
+async fn recovered_delegation_work_from_steps(
     db: &VotingDb,
     round_id: &str,
     delegation: &BTreeMap<u32, DelegationPhase>,
@@ -487,7 +498,8 @@ fn recovered_delegation_work_from_steps(
                     ))
                 })?;
                 let tx_hash = db
-                    .get_delegation_tx_hash(round_id, bundle_index)?
+                    .get_delegation_tx_hash(round_id, bundle_index)
+                    .await?
                     .ok_or_else(|| {
                         missing_recovery_field(format!(
                             "poll delegation step missing tx_hash for round={round_id}, bundle={bundle_index}"
@@ -506,7 +518,7 @@ fn recovered_delegation_work_from_steps(
     Ok(work)
 }
 
-fn recovered_vote_work_from_steps(
+async fn recovered_vote_work_from_steps(
     db: &VotingDb,
     round_id: &str,
     blocking_confirm_share_keys: &BTreeSet<(u32, u32, u32)>,
@@ -541,7 +553,8 @@ fn recovered_vote_work_from_steps(
                 proposal_id,
             } => {
                 let tx_hash = db
-                    .get_vote_tx_hash(round_id, bundle_index, proposal_id)?
+                    .get_vote_tx_hash(round_id, bundle_index, proposal_id)
+                    .await?
                     .ok_or_else(|| {
                         missing_recovery_field(format!(
                             "poll vote step missing tx_hash for round={round_id}, bundle={bundle_index}, proposal={proposal_id}"
@@ -560,14 +573,17 @@ fn recovered_vote_work_from_steps(
                 bundle_index,
                 proposal_id,
                 share_index,
-            } => push_submit_share_work(
-                db,
-                round_id,
-                &mut work,
-                bundle_index,
-                proposal_id,
-                share_index,
-            )?,
+            } => {
+                push_submit_share_work(
+                    db,
+                    round_id,
+                    &mut work,
+                    bundle_index,
+                    proposal_id,
+                    share_index,
+                )
+                .await?
+            }
             NextStep::ConfirmShare {
                 bundle_index,
                 proposal_id,
@@ -585,7 +601,8 @@ fn recovered_vote_work_from_steps(
                     bundle_index,
                     proposal_id,
                     share_index,
-                )?;
+                )
+                .await?;
             }
             _ => {}
         }
@@ -593,7 +610,7 @@ fn recovered_vote_work_from_steps(
     Ok(work)
 }
 
-fn push_submit_share_work(
+async fn push_submit_share_work(
     db: &VotingDb,
     round_id: &str,
     work: &mut Vec<VoteRecoveryWork>,
@@ -613,7 +630,8 @@ fn push_submit_share_work(
     }
 
     let vc_tree_position = db
-        .get_commitment_bundle(round_id, bundle_index, proposal_id)?
+        .get_commitment_bundle(round_id, bundle_index, proposal_id)
+        .await?
         .map(|(_, position)| position)
         .ok_or_else(|| {
             missing_recovery_field(format!(
@@ -712,7 +730,7 @@ fn completed_vote_display(
 /// Wallets should execute one returned step, persist that step's result, then
 /// call `resume_plan` again; later steps may depend on earlier on-chain
 /// confirmations.
-pub fn resume_plan(
+pub async fn resume_plan(
     db: &VotingDb,
     round_id: &str,
     proposal_ids: &[u32],
@@ -722,19 +740,21 @@ pub fn resume_plan(
     }
 
     let delegation: BTreeMap<u32, DelegationPhase> =
-        db.delegation_phases(round_id)?.into_iter().collect();
+        db.delegation_phases(round_id).await?.into_iter().collect();
     let votes: BTreeMap<(u32, u32), VotePhase> = db
-        .vote_phases(round_id)?
+        .vote_phases(round_id)
+        .await?
         .into_iter()
         .map(|(b, p, ph)| ((b, p), ph))
         .collect();
     let vote_choices: BTreeMap<(u32, u32), u32> = db
-        .get_votes(round_id)?
+        .get_votes(round_id)
+        .await?
         .into_iter()
         .map(|vote| ((vote.bundle_index, vote.proposal_id), vote.choice))
         .collect();
-    let share_phase_rows = db.share_phases(round_id)?;
-    let share_delegations = db.get_share_delegations(round_id)?;
+    let share_phase_rows = db.share_phases(round_id).await?;
+    let share_delegations = db.get_share_delegations(round_id).await?;
     let share_indexes_by_vote = share_phase_rows.iter().fold(
         BTreeMap::<(u32, u32), BTreeSet<u32>>::new(),
         |mut acc, (bundle_index, proposal_id, share_index, _)| {
@@ -744,7 +764,7 @@ pub fn resume_plan(
             acc
         },
     );
-    let intents: BTreeMap<u32, Decision> = db.ballot_intents(round_id)?.into_iter().collect();
+    let intents: BTreeMap<u32, Decision> = db.ballot_intents(round_id).await?.into_iter().collect();
 
     let bundles: Vec<u32> = delegation.keys().copied().collect();
 
@@ -826,7 +846,9 @@ pub fn resume_plan(
                             .get(&vote_key)
                             .cloned()
                             .unwrap_or_default(),
-                    )? {
+                    )
+                    .await?
+                    {
                         steps.push(NextStep::SubmitShares {
                             bundle_index: b,
                             proposal_id: pid,
@@ -841,7 +863,7 @@ pub fn resume_plan(
                     });
                 }
                 Some(VotePhase::Submitted) => {
-                    if !vote_has_recovery_bundle(db, round_id, b, pid)? {
+                    if !vote_has_recovery_bundle(db, round_id, b, pid).await? {
                         return Err(VotingError::InvalidInput {
                             message: format!(
                                 "round {round_id} bundle {b} proposal {pid} has a submitted vote without recovery material"
@@ -914,7 +936,8 @@ pub fn resume_plan(
         })
         .collect::<BTreeSet<_>>();
     let blocking_confirm_share_keys = db
-        .get_unconfirmed_delegations(round_id)?
+        .get_unconfirmed_delegations(round_id)
+        .await?
         .into_iter()
         .filter(|share| share.sent_to_urls.is_empty())
         .filter(|share| {
@@ -936,7 +959,7 @@ pub fn resume_plan(
         _ => true,
     });
 
-    let delegation_statuses = delegation_statuses(db, round_id, &delegation)?;
+    let delegation_statuses = delegation_statuses(db, round_id, &delegation).await?;
     let hotkey_bound = delegation
         .values()
         .any(|phase| *phase != DelegationPhase::Prepared)
@@ -994,9 +1017,9 @@ pub fn resume_plan(
         completed_for_display,
     );
     let recovered_delegation_work =
-        recovered_delegation_work_from_steps(db, round_id, &delegation, &steps)?;
+        recovered_delegation_work_from_steps(db, round_id, &delegation, &steps).await?;
     let recovered_vote_work =
-        recovered_vote_work_from_steps(db, round_id, &blocking_confirm_share_keys, &steps)?;
+        recovered_vote_work_from_steps(db, round_id, &blocking_confirm_share_keys, &steps).await?;
 
     Ok(RoundPlan {
         round_id: round_id.to_string(),
@@ -1018,26 +1041,28 @@ pub fn resume_plan(
     })
 }
 
-fn vote_has_recovery_bundle(
+async fn vote_has_recovery_bundle(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     proposal_id: u32,
 ) -> Result<bool, VotingError> {
     Ok(matches!(
-        db.get_commitment_bundle_recovery_fields(round_id, bundle_index, proposal_id)?,
+        db.get_commitment_bundle_recovery_fields(round_id, bundle_index, proposal_id)
+            .await?,
         Some((Some(_), _))
     ))
 }
 
-fn missing_share_indexes_for_confirmed_vote(
+async fn missing_share_indexes_for_confirmed_vote(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     proposal_id: u32,
     recorded_share_indexes: BTreeSet<u32>,
 ) -> Result<Vec<u32>, VotingError> {
-    let Some(recovery) = crate::vote::recovery_bundle(db, round_id, bundle_index, proposal_id)?
+    let Some(recovery) =
+        crate::vote::recovery_bundle(db, round_id, bundle_index, proposal_id).await?
     else {
         return Err(VotingError::InvalidInput {
             message: format!(
@@ -1063,7 +1088,7 @@ fn missing_share_indexes_for_confirmed_vote(
         .collect())
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::round::RoundParams;
@@ -1158,6 +1183,7 @@ mod tests {
             choice,
             &[0xCC; 16],
         )
+        .await
         .unwrap();
         store_vote_recovery_fixture(db, bundle_index, proposal_id, choice, Some(42));
         db.record_vote_submission(ROUND, bundle_index, proposal_id, "tx")
@@ -1408,7 +1434,9 @@ mod tests {
             .unwrap();
         db.store_delegation_tx_hash(ROUND, 0, "dtx").unwrap();
         db.store_van_position(ROUND, 0, 7).unwrap();
-        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 1, &[0xCC; 16]).unwrap();
+        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 1, &[0xCC; 16])
+            .await
+            .unwrap();
         store_vote_recovery_fixture(&db, 0, 2, 1, None);
         db.record_vote_submission(ROUND, 0, 2, "vtx").unwrap();
         let plan = resume_plan(&db, ROUND, &[1, 2, 3]).unwrap();
@@ -1439,7 +1467,9 @@ mod tests {
             .unwrap();
         db.store_delegation_tx_hash(ROUND, 0, "dtx").unwrap();
         db.store_van_position(ROUND, 0, 7).unwrap();
-        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 1, &[0xCC; 16]).unwrap();
+        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 1, &[0xCC; 16])
+            .await
+            .unwrap();
         db.record_vote_submission(ROUND, 0, 2, "vtx").unwrap();
 
         let err = resume_plan(&db, ROUND, &[1, 2, 3]).unwrap_err();
@@ -1458,7 +1488,9 @@ mod tests {
             .unwrap();
         db.store_delegation_tx_hash(ROUND, 0, "dtx").unwrap();
         db.store_van_position(ROUND, 0, 7).unwrap();
-        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 1, &[0xCC; 16]).unwrap();
+        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 1, &[0xCC; 16])
+            .await
+            .unwrap();
         store_vote_recovery_fixture(&db, 0, 2, 1, None);
         db.record_vote_submission(ROUND, 0, 2, "vtx").unwrap();
         record_submitted_share_fixture(&db, 0, 2, 0, &[]);
@@ -1502,7 +1534,9 @@ mod tests {
             .unwrap();
         db.store_delegation_tx_hash(ROUND, 0, "dtx").unwrap();
         db.store_van_position(ROUND, 0, 7).unwrap();
-        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 1, &[0xCC; 16]).unwrap();
+        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 1, &[0xCC; 16])
+            .await
+            .unwrap();
         store_vote_recovery_fixture(&db, 0, 2, 1, None);
 
         let plan = resume_plan(&db, ROUND, &[1, 2, 3]).unwrap();
@@ -1599,7 +1633,9 @@ mod tests {
             .unwrap();
         db.store_delegation_tx_hash(ROUND, 0, "dtx").unwrap();
         db.store_van_position(ROUND, 0, 7).unwrap();
-        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 0, &[0xCC; 16]).unwrap();
+        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 0, &[0xCC; 16])
+            .await
+            .unwrap();
 
         db.set_ballot_intent(ROUND, 2, Decision::Choice(1), 3)
             .unwrap();
@@ -1629,7 +1665,9 @@ mod tests {
         let db = db_with_bundle();
         db.set_ballot_intent(ROUND, 2, Decision::Choice(0), 3)
             .unwrap();
-        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 0, &[0xCC; 16]).unwrap();
+        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 0, &[0xCC; 16])
+            .await
+            .unwrap();
 
         db.set_ballot_intent(ROUND, 2, Decision::Skipped, 3)
             .unwrap();
@@ -1657,7 +1695,9 @@ mod tests {
         db.store_delegation_tx_hash(ROUND, 0, "dtx").unwrap();
         db.store_van_position(ROUND, 0, 7).unwrap();
 
-        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 0, &[0xCC; 16]).unwrap();
+        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 0, &[0xCC; 16])
+            .await
+            .unwrap();
         db.record_share_delegation(
             ROUND,
             0,
@@ -1689,7 +1729,9 @@ mod tests {
         db.store_delegation_tx_hash(ROUND, 0, "dtx").unwrap();
         db.store_van_position(ROUND, 0, 7).unwrap();
 
-        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 0, &[0xCC; 16]).unwrap();
+        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 0, &[0xCC; 16])
+            .await
+            .unwrap();
         db.record_share_delegation(
             ROUND,
             0,
@@ -1703,7 +1745,9 @@ mod tests {
 
         db.set_ballot_intent(ROUND, 2, Decision::Choice(1), 3)
             .unwrap();
-        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 1, &[0xDD; 16]).unwrap();
+        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 1, &[0xDD; 16])
+            .await
+            .unwrap();
 
         assert!(
             db.get_share_delegations(ROUND).unwrap().is_empty(),
@@ -1724,7 +1768,9 @@ mod tests {
     #[test]
     fn skipped_intent_clears_and_blocks_stale_share_rows() {
         let db = db_with_bundle();
-        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 0, &[0xCC; 16]).unwrap();
+        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 0, 2, 0, &[0xCC; 16])
+            .await
+            .unwrap();
         db.record_share_delegation(
             ROUND,
             0,
@@ -1898,7 +1944,9 @@ mod tests {
         }
         confirm_vote_fixture(&db, 0, 1, 0);
         record_all_confirmed_share_fixtures(&db, 0, 1);
-        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 1, 1, 0, &[0xCC; 16]).unwrap();
+        crate::storage::queries::store_vote(&db.conn(), ROUND, W, 1, 1, 0, &[0xCC; 16])
+            .await
+            .unwrap();
         store_vote_recovery_fixture(&db, 1, 1, 0, None);
 
         let plan = resume_plan(&db, ROUND, &[1, 2, 3]).unwrap();

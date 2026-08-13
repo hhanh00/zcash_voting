@@ -7,6 +7,25 @@ Client-side library for integrating [Zcash shielded voting](https://github.com/v
 Wallets should import `zcash_voting::prelude::*` and follow the stable setup →
 precompute → delegate → vote → share lifecycle:
 
+All persistence and workflow methods are async. `VotingDb` is backed by a
+single-connection SQLx 0.8 SQLite pool, so it can share zkool2's SQLite ABI and
+Tokio runtime without pulling in `rusqlite` or `zcash_client_sqlite`.
+
+```rust
+use zcash_voting::prelude::*;
+
+# async fn open() -> Result<(), VotingError> {
+let db = VotingDb::open("voting.sqlite").await?;
+db.set_wallet_id("account-id");
+db.ensure_round(Network::Testnet, &round_params, None).await?;
+# Ok(())
+# }
+```
+
+Wallet database adapters are intentionally outside this crate. The wallet
+selects its own notes and witnesses, then passes crate-native `NoteInfo` and
+`WitnessData` values into the voting lifecycle.
+
 1. Open a `VotingDb`, set the wallet id, and call `create_round` with the
    wallet/voting `Network` (pass `None` when no round session metadata is
    available).
@@ -18,7 +37,8 @@ precompute → delegate → vote → share lifecycle:
    `*_with_policy` variants with `BundlePolicy::new(...)`; proof construction
    still pads each bundle to the same fixed circuit slot count.
 3. Build the governance PCZT with `setup_delegation`.
-4. Precompute delegation inputs with `note_witnesses` and `delegation_pir`.
+4. Persist caller-provided note witnesses and precompute delegation PIR inputs
+   with `delegation_pir`.
 5. After `delegate::setup`, load `delegation_signing_request` and sign it in
    the wallet. Then prove with `delegate::prove`, assemble submission fields with
    `delegation_submission` plus `DelegationSigner::signature`, submit them
@@ -256,8 +276,8 @@ This release line requires Rust 1.88 or newer.
 - **`vote-commitment-tree 0.4.0-rc.1`** and
   **`vote-commitment-tree-client 0.6.0-rc.1`** for vote commitment tree state
   and optional HTTP sync.
-- **`pczt 0.9.2`, `zcash_client_backend 0.24.0-rc.7`,
-  `zcash_client_sqlite 0.22.0-rc.7`, `zcash_keys 0.16.1`,
+- **`sqlx 0.8`** for asynchronous SQLite persistence, aligned with zkool2.
+- **`pczt 0.9.2`, `zcash_client_backend 0.24.0-rc.7`, `zcash_keys 0.16.1`,
   `zcash_primitives 0.30.0`, and `zcash_protocol 0.10.4`** from published
   librustzcash releases.
 
@@ -270,8 +290,8 @@ This release line requires Rust 1.88 or newer.
 - Use `BundlePolicy` plus the `*_with_policy` APIs when an integration needs
   fewer real notes per bundle. Omit the policy for the default circuit-slot
   behavior.
-- Use `precompute::note_witnesses` instead of hand-validating cached
-  `TreeState` bytes and manually constructing `WitnessData`.
+- Construct `WitnessData` at the wallet boundary and persist it through the
+  voting database APIs; this crate does not open the wallet's SQLite database.
 - Use `delegate::submission` with `DelegationSigner::signature(sig, sighash)`
   after signing `delegation_signing_request` in the wallet. Signer variants that
   accepted seeds and Keystone specific signature aliases were removed; software

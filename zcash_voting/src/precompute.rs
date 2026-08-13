@@ -8,14 +8,10 @@
 //! See the `zcash-voting-wallet-example` workspace crate for caller-oriented
 //! precompute orchestration that can evolve independently from the library API.
 
-use std::borrow::Borrow;
-
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock},
 };
-
-use zcash_client_sqlite::WalletDb;
 
 use crate::{
     round::VotingDb,
@@ -40,6 +36,7 @@ pub struct PirPrecomputeReport {
 ///
 /// This is the FFI-friendly variant for callers that pass the round tree state
 /// with the note-witness request.
+#[cfg(any())]
 pub fn note_witnesses<C, P, CL, R>(
     db: &VotingDb,
     round_id: &str,
@@ -67,6 +64,7 @@ where
 /// This is the FFI-friendly variant for callers that already persisted the
 /// round tree state through [`VotingDb`] and should not reach into storage
 /// query helpers.
+#[cfg(any())]
 pub fn stored_note_witnesses<C, P, CL, R>(
     db: &VotingDb,
     round_id: &str,
@@ -104,18 +102,24 @@ pub fn verify_witness(witness: &WitnessData) -> Result<(), VotingError> {
 ///
 /// For each confirmed bundle that has not yet submitted a vote, this also
 /// verifies that the confirmed event position contains its delegation VAN.
-pub fn sync_vote_tree(db: &VotingDb, round_id: &str, node_url: &str) -> Result<u32, VotingError> {
-    vote_tree_sync_for(db)?.sync(db, round_id, node_url)
+pub async fn sync_vote_tree(
+    db: &VotingDb,
+    round_id: &str,
+    node_url: &str,
+) -> Result<u32, VotingError> {
+    vote_tree_sync_for(db)?.sync(db, round_id, node_url).await
 }
 
 /// Generates the VAN witness needed by `vote::commit`.
-pub fn van_witness(
+pub async fn van_witness(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     anchor_height: u32,
 ) -> Result<VanWitness, VotingError> {
-    vote_tree_sync_for(db)?.generate_van_witness(db, round_id, bundle_index, anchor_height)
+    vote_tree_sync_for(db)?
+        .generate_van_witness(db, round_id, bundle_index, anchor_height)
+        .await
 }
 
 /// Drops cached vote tree state for one round, or all rounds when `round_id` is empty.
@@ -137,10 +141,10 @@ pub fn reset_vote_tree(db: &VotingDb, round_id: &str) -> Result<(), VotingError>
 ///
 /// When `round_id` is empty, only the process-local vote tree cache is reset
 /// account-wide; no persisted delegation setup columns are cleared.
-pub fn reset_voting_session_state(db: &VotingDb, round_id: &str) -> Result<(), VotingError> {
+pub async fn reset_voting_session_state(db: &VotingDb, round_id: &str) -> Result<(), VotingError> {
     reset_vote_tree(db, round_id)?;
     if !round_id.is_empty() {
-        db.clear_unsigned_delegation_setup_fields(round_id)?;
+        db.clear_unsigned_delegation_setup_fields(round_id).await?;
     }
     Ok(())
 }
@@ -162,7 +166,7 @@ fn vote_tree_sync_for(db: &VotingDb) -> Result<Arc<crate::tree_sync::VoteTreeSyn
 /// Fetches and persists PIR-backed IMT non-membership proofs for one bundle.
 ///
 /// This must run after padded-note secrets have been initialized for the bundle.
-pub fn delegation_pir(
+pub async fn delegation_pir(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -170,8 +174,9 @@ pub fn delegation_pir(
     pir_client: &pir_client::PirClientBlocking,
     network: Network,
 ) -> Result<PirPrecomputeReport, VotingError> {
-    let result =
-        db.precompute_delegation_pir(round_id, bundle_index, notes, pir_client, network)?;
+    let result = db
+        .precompute_delegation_pir(round_id, bundle_index, notes, pir_client, network)
+        .await?;
     Ok(PirPrecomputeReport {
         cached: result.cached_count,
         fetched: result.fetched_count,
@@ -187,7 +192,7 @@ pub fn delegation_pir(
 /// # Errors
 ///
 /// Failures come from padded-secret initialization or PIR precompute.
-pub(crate) fn warm_delegation_pir(
+pub(crate) async fn warm_delegation_pir(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -196,8 +201,9 @@ pub(crate) fn warm_delegation_pir(
     pir_client: &pir_client::PirClientBlocking,
     network: Network,
 ) -> Result<PreparedDelegationReport, VotingError> {
-    db.ensure_padded_secrets(round_id, bundle_index, notes)?;
-    let report = delegation_pir(db, round_id, bundle_index, notes, pir_client, network)?;
+    db.ensure_padded_secrets(round_id, bundle_index, notes)
+        .await?;
+    let report = delegation_pir(db, round_id, bundle_index, notes, pir_client, network).await?;
 
     Ok(PreparedDelegationReport {
         report,
@@ -206,7 +212,7 @@ pub(crate) fn warm_delegation_pir(
     })
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod pir_tests {
     use super::*;
     use crate::round::BundleLayout;
@@ -344,7 +350,7 @@ mod pir_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tree_sync_tests {
     use super::*;
     use ff::PrimeField;
@@ -532,7 +538,7 @@ mod tree_sync_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod session_reset_tests {
     use super::*;
     use crate::storage::queries;

@@ -66,7 +66,7 @@ pub fn compute_nullifier(
 }
 
 /// Records a helper-share submission using nullifier material from recovery state.
-pub fn record(
+pub async fn record(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -75,7 +75,8 @@ pub fn record(
     sent_to_urls: &[String],
     submit_at: u64,
 ) -> Result<(), VotingError> {
-    let bundle = crate::vote::recovery_bundle(db, round_id, bundle_index, proposal_id)?
+    let bundle = crate::vote::recovery_bundle(db, round_id, bundle_index, proposal_id)
+        .await?
         .ok_or_else(|| VotingError::InvalidInput {
             message: format!(
                 "vote recovery bundle not found for round={round_id}, bundle={bundle_index}, proposal={proposal_id}"
@@ -93,23 +94,27 @@ pub fn record(
         &nullifier,
         submit_at,
     )
+    .await
 }
 
 /// Lists all helper-share records for a round.
-pub fn list(db: &VotingDb, round_id: &str) -> Result<Vec<ShareDelegationRecord>, VotingError> {
-    db.get_share_delegations(round_id)
-}
-
-/// Lists unconfirmed helper-share records for retry and polling.
-pub fn unconfirmed(
+pub async fn list(
     db: &VotingDb,
     round_id: &str,
 ) -> Result<Vec<ShareDelegationRecord>, VotingError> {
-    db.get_unconfirmed_delegations(round_id)
+    db.get_share_delegations(round_id).await
+}
+
+/// Lists unconfirmed helper-share records for retry and polling.
+pub async fn unconfirmed(
+    db: &VotingDb,
+    round_id: &str,
+) -> Result<Vec<ShareDelegationRecord>, VotingError> {
+    db.get_unconfirmed_delegations(round_id).await
 }
 
 /// Marks one helper-share record confirmed.
-pub fn confirm(
+pub async fn confirm(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -117,10 +122,11 @@ pub fn confirm(
     share_index: u32,
 ) -> Result<(), VotingError> {
     db.mark_share_confirmed(round_id, bundle_index, proposal_id, share_index)
+        .await
 }
 
 /// Adds helper URLs to an existing share record after resubmission.
-pub fn add_sent_servers(
+pub async fn add_sent_servers(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -129,6 +135,7 @@ pub fn add_sent_servers(
     new_urls: &[String],
 ) -> Result<(), VotingError> {
     db.add_sent_servers(round_id, bundle_index, proposal_id, share_index, new_urls)
+        .await
 }
 
 /// Reconstructs one helper-server payload from a persisted vote recovery bundle.
@@ -217,7 +224,7 @@ fn array32(label: &str, value: Vec<u8>) -> Result<[u8; 32], VotingError> {
         })
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::{

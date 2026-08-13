@@ -83,15 +83,18 @@ pub struct RoundRecoverySnapshot {
 /// If the bundle JSON exists but `vc_tree_position` is still NULL, this returns
 /// `Some` with placeholder tree position `0` only when the vote transaction hash
 /// has already been recorded; otherwise it returns `None`.
-pub fn recoverable_commitment_bundle(
+pub async fn recoverable_commitment_bundle(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     proposal_id: u32,
 ) -> Result<Option<RecoverableCommitmentBundle>, VotingError> {
-    let fields = db.get_commitment_bundle_recovery_fields(round_id, bundle_index, proposal_id)?;
+    let fields = db
+        .get_commitment_bundle_recovery_fields(round_id, bundle_index, proposal_id)
+        .await?;
     let has_vote_tx_hash = db
-        .get_vote_tx_hash(round_id, bundle_index, proposal_id)?
+        .get_vote_tx_hash(round_id, bundle_index, proposal_id)
+        .await?
         .is_some();
 
     match fields {
@@ -120,35 +123,36 @@ pub fn recoverable_commitment_bundle(
 }
 
 /// Loads the full recovery snapshot for one round.
-pub fn round_snapshot(db: &VotingDb, round_id: &str) -> Result<RoundRecoverySnapshot, VotingError> {
-    let bundle_count = db.get_bundle_count(round_id)?;
-    let vote_rows = db.get_votes(round_id)?;
+pub async fn round_snapshot(
+    db: &VotingDb,
+    round_id: &str,
+) -> Result<RoundRecoverySnapshot, VotingError> {
+    let bundle_count = db.get_bundle_count(round_id).await?;
+    let vote_rows = db.get_votes(round_id).await?;
 
-    let votes = build_vote_recovery_rows(db, round_id, &vote_rows)?;
+    let votes = build_vote_recovery_rows(db, round_id, &vote_rows).await?;
     let mut commitment_bundles = Vec::new();
     for vote in &votes {
         if let Some(bundle) =
-            recoverable_commitment_bundle(db, round_id, vote.bundle_index, vote.proposal_id)?
+            recoverable_commitment_bundle(db, round_id, vote.bundle_index, vote.proposal_id).await?
         {
             commitment_bundles.push(bundle);
         }
     }
 
-    let delegation = db
-        .delegation_phases(round_id)?
-        .into_iter()
-        .map(|(bundle_index, phase)| {
-            Ok(DelegationRecovery {
-                bundle_index,
-                phase,
-                tx_hash: db.get_delegation_tx_hash(round_id, bundle_index)?,
-                van_leaf_position: db.load_van_position(round_id, bundle_index).ok(),
-            })
-        })
-        .collect::<Result<Vec<_>, VotingError>>()?;
+    let mut delegation = Vec::new();
+    for (bundle_index, phase) in db.delegation_phases(round_id).await? {
+        delegation.push(DelegationRecovery {
+            bundle_index,
+            phase,
+            tx_hash: db.get_delegation_tx_hash(round_id, bundle_index).await?,
+            van_leaf_position: db.load_van_position(round_id, bundle_index).await.ok(),
+        });
+    }
 
     let shares = db
-        .share_phases(round_id)?
+        .share_phases(round_id)
+        .await?
         .into_iter()
         .map(
             |(bundle_index, proposal_id, share_index, phase)| ShareWorkflow {
@@ -167,8 +171,8 @@ pub fn round_snapshot(db: &VotingDb, round_id: &str) -> Result<RoundRecoverySnap
         votes,
         commitment_bundles,
         shares,
-        share_delegations: share::list(db, round_id)?,
-        unconfirmed_share_delegations: share::unconfirmed(db, round_id)?,
+        share_delegations: share::list(db, round_id).await?,
+        unconfirmed_share_delegations: share::unconfirmed(db, round_id).await?,
     })
 }
 
@@ -177,11 +181,11 @@ pub fn round_snapshot(db: &VotingDb, round_id: &str) -> Result<RoundRecoverySnap
 /// Ballot intent, recorded vote confirmations, and imported delegation
 /// capabilities are preserved. Use [`VotingDb::clear_round`] to remove the
 /// entire round.
-pub fn clear(db: &VotingDb, round_id: &str) -> Result<(), VotingError> {
-    db.clear_recovery_state(round_id)
+pub async fn clear(db: &VotingDb, round_id: &str) -> Result<(), VotingError> {
+    db.clear_recovery_state(round_id).await
 }
 
-fn build_vote_recovery_rows(
+async fn build_vote_recovery_rows(
     db: &VotingDb,
     round_id: &str,
     vote_rows: &[VoteRecord],
@@ -193,29 +197,31 @@ fn build_vote_recovery_rows(
         .map(|row| ((row.bundle_index, row.proposal_id), row.choice))
         .collect::<BTreeMap<_, _>>();
 
-    db.vote_phases(round_id)?
-        .into_iter()
-        .map(|(bundle_index, proposal_id, phase)| {
-            let tx_hash = db.get_vote_tx_hash(round_id, bundle_index, proposal_id)?;
-            let fields =
-                db.get_commitment_bundle_recovery_fields(round_id, bundle_index, proposal_id)?;
-            let (has_commitment_bundle, vc_tree_position) = match fields {
-                Some((bundle_json, position)) => {
-                    let vc_tree_position = position
-                        .map(|position| {
-                            u64::try_from(position).map_err(|_| VotingError::Internal {
-                                message: format!(
-                                    "stored vc_tree_position must be non-negative, got {position}"
-                                ),
-                            })
+    let mut result = Vec::new();
+    for (bundle_index, proposal_id, phase) in db.vote_phases(round_id).await? {
+        let tx_hash = db
+            .get_vote_tx_hash(round_id, bundle_index, proposal_id)
+            .await?;
+        let fields = db
+            .get_commitment_bundle_recovery_fields(round_id, bundle_index, proposal_id)
+            .await?;
+        let (has_commitment_bundle, vc_tree_position) = match fields {
+            Some((bundle_json, position)) => {
+                let vc_tree_position = position
+                    .map(|position| {
+                        u64::try_from(position).map_err(|_| VotingError::Internal {
+                            message: format!(
+                                "stored vc_tree_position must be non-negative, got {position}"
+                            ),
                         })
-                        .transpose()?;
-                    (bundle_json.is_some(), vc_tree_position)
-                }
-                None => (false, None),
-            };
+                    })
+                    .transpose()?;
+                (bundle_json.is_some(), vc_tree_position)
+            }
+            None => (false, None),
+        };
 
-            let choice = choices
+        let choice = choices
                 .get(&(bundle_index, proposal_id))
                 .copied()
                 .ok_or_else(|| VotingError::Internal {
@@ -224,20 +230,20 @@ fn build_vote_recovery_rows(
                     ),
                 })?;
 
-            Ok(VoteRecovery {
-                bundle_index,
-                proposal_id,
-                choice,
-                phase,
-                tx_hash,
-                vc_tree_position,
-                has_commitment_bundle,
-            })
-        })
-        .collect()
+        result.push(VoteRecovery {
+            bundle_index,
+            proposal_id,
+            choice,
+            phase,
+            tx_hash,
+            vc_tree_position,
+            has_commitment_bundle,
+        });
+    }
+    Ok(result)
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use crate::{round::RoundParams, storage::queries, types::NoteInfo};

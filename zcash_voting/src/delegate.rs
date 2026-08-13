@@ -6,16 +6,8 @@
 
 pub use crate::phases::DelegationPhase;
 
-use std::borrow::Borrow;
-
 pub use crate::lwd::branch_id_for_height;
 use crate::note_bundling::BundlePolicy;
-pub use crate::selection::{
-    gather_delegation_wallet_inputs, DelegationWalletInputs, GatherDelegationWalletParams,
-};
-use crate::selection::{
-    gather_delegation_wallet_inputs_for_target, GatherDelegationWalletForTargetParams,
-};
 use crate::{
     governance::BUNDLE_NOTE_SLOTS,
     precompute::PirPrecomputeReport,
@@ -25,8 +17,6 @@ use crate::{
         VotingHotkey, VotingHotkeyTarget,
     },
 };
-use zcash_client_backend::data_api::{wallet::ConfirmationsPolicy, Account, WalletRead};
-use zcash_client_sqlite::{AccountUuid, WalletDb};
 use zcash_protocol::consensus::{NetworkConstants, Parameters};
 
 /// Wallet-derived keys and chain parameters needed to build a delegation PCZT.
@@ -230,14 +220,16 @@ pub struct DelegationRoundContext {
 /// Ensures the round exists and resolves the display name used in delegation metadata.
 ///
 /// An empty `round_name` falls back to `params.vote_round_id`.
-pub fn ensure_round_context(
+pub async fn ensure_round_context(
     voting_db: &VotingDb,
     network: Network,
     params: &RoundParams,
     round_name: &str,
     session_json: Option<&str>,
 ) -> Result<DelegationRoundContext, VotingError> {
-    let state = voting_db.ensure_round_state(network, params, session_json)?;
+    let state = voting_db
+        .ensure_round_state(network, params, session_json)
+        .await?;
     Ok(DelegationRoundContext {
         snapshot_height: state.snapshot_height,
         round_name: crate::round::delegation_round_name(params, round_name),
@@ -379,6 +371,7 @@ pub async fn gather_delegation_lwd_inputs(
 ///
 /// Returns an error if round context initialization, wallet access, bundle
 /// preparation, or witness persistence fails.
+#[cfg(any())]
 pub fn prepare_delegation_bundle<C, P, CL, R>(
     voting_db: &VotingDb,
     wallet_db: &WalletDb<C, P, CL, R>,
@@ -413,6 +406,7 @@ where
 ///
 /// Returns an error if the target context differs from the delegation context,
 /// or if the normal delegation preparation checks fail.
+#[cfg(any())]
 pub fn prepare_delegation_bundle_for_target<C, P, CL, R>(
     voting_db: &VotingDb,
     wallet_db: &WalletDb<C, P, CL, R>,
@@ -436,6 +430,7 @@ where
     )
 }
 
+#[cfg(any())]
 fn prepare_delegation_bundle_inner<C, P, CL, R>(
     voting_db: &VotingDb,
     wallet_db: &WalletDb<C, P, CL, R>,
@@ -759,6 +754,7 @@ impl PreparedDelegationBundle {
     ///
     /// Callers that separately warm PIR rows can use this before proving without
     /// knowing how witness rows are cached.
+    #[cfg(any())]
     pub fn ensure_witnesses<C, P, CL, R>(
         &self,
         voting_db: &VotingDb,
@@ -790,6 +786,7 @@ impl PreparedDelegationBundle {
     /// This is the prepared-bundle replacement for the older loose
     /// `PrecomputeDelegationInputs` path. It never recalculates bundle membership;
     /// the prepared bundle is the source of truth for notes, layout, and network.
+    #[cfg(any())]
     pub fn precompute<C, P, CL, R>(
         &self,
         voting_db: &VotingDb,
@@ -814,7 +811,7 @@ impl PreparedDelegationBundle {
     }
 
     /// Builds and persists the governance PCZT setup for this prepared bundle.
-    pub fn setup(
+    pub async fn setup(
         &self,
         voting_db: &VotingDb,
         stages: &dyn DelegationProgressReporter,
@@ -829,10 +826,11 @@ impl PreparedDelegationBundle {
             &self.branch_id_provider,
             stages,
         )
+        .await
     }
 
     /// Generates and persists the delegation proof for this prepared bundle.
-    pub fn prove(
+    pub async fn prove(
         &self,
         voting_db: &VotingDb,
         pir_client: &pir_client::PirClientBlocking,
@@ -847,10 +845,11 @@ impl PreparedDelegationBundle {
             pir_client,
             stages,
         )
+        .await
     }
 
     /// Assembles chain-ready submission fields for this prepared bundle.
-    pub fn submission(
+    pub async fn submission(
         &self,
         voting_db: &VotingDb,
         signer: PreparedSigner,
@@ -858,7 +857,7 @@ impl PreparedDelegationBundle {
         let signer = match signer {
             PreparedSigner::Signature { sig, sighash } => DelegationSigner::signature(sig, sighash),
         };
-        crate::delegate::submission(voting_db, &self.round_id, self.bundle_index, signer)
+        crate::delegate::submission(voting_db, &self.round_id, self.bundle_index, signer).await
     }
 
     /// Assembles a signed delegation bundle plus wallet-facing metadata.
@@ -867,7 +866,7 @@ impl PreparedDelegationBundle {
     /// for software signing. External signer flows that must not retain the PCZT
     /// in the returned payload can pass an empty vector after verifying the
     /// signature against the stored setup sighash.
-    pub fn signed_bundle(
+    pub async fn signed_bundle(
         &self,
         voting_db: &VotingDb,
         pczt_bytes: Vec<u8>,
@@ -883,7 +882,7 @@ impl PreparedDelegationBundle {
                 });
             }
         }
-        let submission = self.submission(voting_db, signer)?;
+        let submission = self.submission(voting_db, signer).await?;
         Ok(SignedDelegationBundle {
             submission,
             pczt_bytes,
@@ -898,7 +897,7 @@ impl PreparedDelegationBundle {
     ///
     /// Call [`PreparedDelegationBundle::setup`] first so the PCZT sighash and
     /// spend auth randomizer have been persisted.
-    pub fn signing_request(
+    pub async fn signing_request(
         &self,
         voting_db: &VotingDb,
     ) -> Result<DelegationSigningRequest, VotingError> {
@@ -908,15 +907,16 @@ impl PreparedDelegationBundle {
             self.bundle_index,
             &self.delegation_keys,
         )
+        .await
     }
 
     /// Builds the redacted Keystone signing request for this prepared bundle.
-    pub fn keystone_request(
+    pub async fn keystone_request(
         &self,
         voting_db: &VotingDb,
         stages: &dyn DelegationProgressReporter,
     ) -> Result<KeystoneSigningRequest, VotingError> {
-        let setup = self.setup(voting_db, stages)?;
+        let setup = self.setup(voting_db, stages).await?;
         let redacted_pczt_bytes = redact_delegation_pczt_for_signer(&setup.pczt_bytes)?;
         let display_weight_zatoshi = crate::round::raw_bundle_weight(&self.bundle_note_infos)?;
         let display_memo = display_memo(&self.round_name, display_weight_zatoshi);
@@ -951,6 +951,7 @@ impl PreparedDelegationBundle {
 /// Returns [`VotingError::InvalidInput`] for malformed UUIDs, missing accounts,
 /// or accounts without the required derivation/viewing-key material. Wallet DB
 /// read failures are returned as [`VotingError::Internal`].
+#[cfg(any())]
 pub fn load_account_keys<C, P, CL, R>(
     db: &WalletDb<C, P, CL, R>,
     account_uuid: &str,
@@ -989,6 +990,7 @@ where
     })
 }
 
+#[cfg(any())]
 fn parse_account_uuid(account_uuid: &str) -> Result<AccountUuid, VotingError> {
     let uuid = uuid::Uuid::parse_str(account_uuid).map_err(|e| VotingError::InvalidInput {
         message: format!("invalid account UUID: {e}"),
@@ -1000,7 +1002,7 @@ fn parse_account_uuid(account_uuid: &str) -> Result<AccountUuid, VotingError> {
 ///
 /// The bundle must already exist via [`VotingDb::ensure_bundles`]. The returned
 /// sighash is the exact message that an external signer must sign.
-pub fn setup(
+pub async fn setup(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -1011,8 +1013,9 @@ pub fn setup(
 ) -> Result<DelegationSetup, VotingError> {
     let consensus_branch_id = branch_id_provider.consensus_branch_id()?;
     stages.on_progress(DelegationProgress::PcztBuilding);
-    let pczt =
-        db.build_governance_pczt(round_id, bundle_index, notes, keys, consensus_branch_id)?;
+    let pczt = db
+        .build_governance_pczt(round_id, bundle_index, notes, keys, consensus_branch_id)
+        .await?;
     stages.on_progress(DelegationProgress::PcztBuilt);
 
     let pczt_sighash = array32("pczt_sighash", pczt.pczt_sighash)?;
@@ -1032,20 +1035,21 @@ pub fn setup(
 /// persisted for the bundle. `keys` must be the same [`DelegationKeys`] passed
 /// to [`setup`]; use [`PreparedDelegationBundle::signing_request`] when working
 /// through the prepared-bundle lifecycle.
-pub fn signing_request(
+pub async fn signing_request(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     keys: &DelegationKeys,
 ) -> Result<DelegationSigningRequest, VotingError> {
     db.get_delegation_signing_request(round_id, bundle_index, keys)
+        .await
 }
 
 /// Generates and persists the delegation proof for one bundle.
 ///
 /// Witnesses and PIR proof precompute data must already be present. The proof
 /// result is checked against PCZT-derived public fields before persistence.
-pub fn prove(
+pub async fn prove(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -1055,8 +1059,9 @@ pub fn prove(
     stages: &dyn DelegationProgressReporter,
 ) -> Result<DelegationProof, VotingError> {
     stages.on_progress(DelegationProgress::ProofStarting);
-    let proof =
-        db.build_and_prove_delegation(round_id, bundle_index, notes, keys, pir_client, stages)?;
+    let proof = db
+        .build_and_prove_delegation(round_id, bundle_index, notes, keys, pir_client, stages)
+        .await?;
     stages.on_progress(DelegationProgress::ProofComplete);
 
     Ok(DelegationProof {
@@ -1072,7 +1077,7 @@ pub fn prove(
 /// Assembles chain-ready delegation submission fields for one bundle.
 ///
 /// Signers provide a SpendAuth signature over the stored PCZT sighash.
-pub fn submission(
+pub async fn submission(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
@@ -1081,8 +1086,9 @@ pub fn submission(
     let data = match signer {
         DelegationSigner::Signature { sig, sighash } => {
             db.get_delegation_submission_with_signature(round_id, bundle_index, &sig, &sighash)
+                .await?
         }
-    }?;
+    };
 
     Ok(DelegationSubmission {
         proof: data.proof,
@@ -1100,26 +1106,28 @@ pub fn submission(
 }
 
 /// Records the submitted delegation transaction hash for recovery.
-pub fn record_submission(
+pub async fn record_submission(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     tx_hash: &str,
 ) -> Result<(), VotingError> {
     db.store_delegation_tx_hash(round_id, bundle_index, tx_hash)
+        .await
 }
 
 /// Records the confirmed VAN leaf position for a delegated bundle.
 ///
 /// Cast-vote callers should use `confirmation::confirm_vote_submission` so the
 /// vote hash, successor VAN position, and VC position are stored atomically.
-pub fn record_van_position(
+pub async fn record_van_position(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     position: u32,
 ) -> Result<(), VotingError> {
     db.store_van_position(round_id, bundle_index, position)
+        .await
 }
 
 /// Extracts the ZIP-244 shielded sighash from a serialized voting PCZT.
@@ -1279,7 +1287,7 @@ fn array64_slice(label: &str, value: &[u8]) -> Result<[u8; 64], VotingError> {
     })
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
 

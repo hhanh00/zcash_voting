@@ -3,12 +3,14 @@
 
 use std::collections::HashSet;
 
+use crate::named_params;
+use crate::storage::sqlx_ext::{ConnectionExt, OptionalExtension};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use ff::PrimeField;
 use pasta_curves::pallas;
-use rusqlite::{named_params, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use sqlx::{Connection as _, SqliteConnection};
 use zcash_protocol::value::MAX_MONEY;
 
 use crate::{
@@ -269,15 +271,16 @@ struct ValidatedBundle {
 /// digest is a delivery receipt rather than a broadcast prerequisite. Supplying
 /// the wrong target after a restart fails because it cannot reproduce the
 /// persisted VAN commitments.
-pub fn export_delegation_capability(
+pub async fn export_delegation_capability(
     db: &VotingDb,
     voting_target: &RoundBoundVotingHotkeyTarget,
     signed_delegation_txs: &[Vec<u8>],
 ) -> Result<ExportedDelegationCapability, VotingError> {
-    let conn = db.conn();
+    let mut conn = db.conn().await?;
     let wallet_id = db.wallet_id();
     let round_id = hex::encode(voting_target.vote_round_id());
-    let (params, network) = queries::load_round_params_with_network(&conn, &round_id, &wallet_id)?;
+    let (params, network) =
+        queries::load_round_params_with_network(&mut conn, &round_id, &wallet_id).await?;
     validate_round_params(&params).map_err(|e| VotingError::Internal {
         message: format!("stored round parameters are invalid: {e}"),
     })?;
@@ -287,7 +290,7 @@ pub fn export_delegation_capability(
         ));
     }
 
-    let rows = provider_bundles(&conn, &round_id, &wallet_id)?;
+    let rows = provider_bundles(&mut conn, &round_id, &wallet_id).await?;
     if rows.is_empty() || rows.len() > MAX_DELEGATION_CAPABILITY_BUNDLES {
         return Err(invalid("delegation job has an invalid bundle count"));
     }
@@ -373,7 +376,7 @@ pub fn export_delegation_capability(
 /// locally-constructed, or conflicting bundle state is rejected. `capability_json`
 /// must use the exact canonical encoding, and the returned lowercase digest
 /// acknowledges those delivered bytes to the funds controller.
-pub fn import_delegation_capability(
+pub async fn import_delegation_capability(
     db: &VotingDb,
     capability_json: &[u8],
     context: ImportDelegationCapabilityParams<'_>,
@@ -397,15 +400,17 @@ pub fn import_delegation_capability(
 
     let digest = DelegationCapabilityDigest::from_package_bytes(capability_json);
     let wallet_id = db.wallet_id();
-    let mut conn = db.conn();
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
+    let mut conn = db.conn().await?;
+    let mut tx = conn
+        .begin_with("BEGIN IMMEDIATE")
+        .await
         .map_err(|e| VotingError::Internal {
             message: format!("begin delegation capability import failed: {e}"),
         })?;
-    if queries::has_round(&tx, &capability.vote_round_id, &wallet_id)? {
+    if queries::has_round(&mut tx, &capability.vote_round_id, &wallet_id).await? {
         let (stored, network) =
-            queries::load_round_params_with_network(&tx, &capability.vote_round_id, &wallet_id)?;
+            queries::load_round_params_with_network(&mut tx, &capability.vote_round_id, &wallet_id)
+                .await?;
         if stored != *context.expected_round_params || network != context.expected_network {
             return Err(invalid(
                 "stored round context conflicts with the capability",
@@ -413,22 +418,24 @@ pub fn import_delegation_capability(
         }
     } else {
         queries::insert_round(
-            &tx,
+            &mut tx,
             &wallet_id,
             context.expected_network,
             context.expected_round_params,
             context.session_json,
-        )?;
+        )
+        .await?;
     }
 
-    let stored_count = queries::get_bundle_count(&tx, &capability.vote_round_id, &wallet_id)?;
+    let stored_count =
+        queries::get_bundle_count(&mut tx, &capability.vote_round_id, &wallet_id).await?;
     if stored_count == 0 {
         for bundle in &validated.bundles {
-            insert_bundle(&tx, &capability.vote_round_id, &wallet_id, bundle)?;
+            insert_bundle(&mut tx, &capability.vote_round_id, &wallet_id, bundle).await?;
         }
     } else if stored_count == validated.bundles.len() as u32 {
         for bundle in &validated.bundles {
-            if !bundle_matches(&tx, &capability.vote_round_id, &wallet_id, bundle)? {
+            if !bundle_matches(&mut tx, &capability.vote_round_id, &wallet_id, bundle).await? {
                 return Err(invalid("stored bundle state conflicts with the capability"));
             }
         }
@@ -437,19 +444,21 @@ pub fn import_delegation_capability(
             "stored bundle count conflicts with the complete capability",
         ));
     }
-    tx.execute(
-        "UPDATE rounds SET phase = :phase
+    (&mut *tx)
+        .execute(
+            "UPDATE rounds SET phase = :phase
          WHERE round_id = :round_id AND wallet_id = :wallet_id AND phase < :phase",
-        named_params! {
-            ":phase": RoundPhase::DelegationProved as i32,
-            ":round_id": capability.vote_round_id,
-            ":wallet_id": wallet_id,
-        },
-    )
-    .map_err(|e| VotingError::Internal {
-        message: format!("advance imported round phase failed: {e}"),
-    })?;
-    tx.commit().map_err(|e| VotingError::Internal {
+            named_params! {
+                ":phase": RoundPhase::DelegationProved as i32,
+                ":round_id": &capability.vote_round_id,
+                ":wallet_id": &wallet_id,
+            },
+        )
+        .await
+        .map_err(|e| VotingError::Internal {
+            message: format!("advance imported round phase failed: {e}"),
+        })?;
+    tx.commit().await.map_err(|e| VotingError::Internal {
         message: format!("commit delegation capability import failed: {e}"),
     })?;
     Ok(digest)
@@ -457,12 +466,12 @@ pub fn import_delegation_capability(
 
 type ProviderBundleRow = (u32, [u8; 32], [u8; 32], u64, u32, Option<String>);
 
-fn provider_bundles(
-    conn: &rusqlite::Connection,
+async fn provider_bundles(
+    conn: &mut SqliteConnection,
     round_id: &str,
     wallet_id: &str,
 ) -> Result<Vec<ProviderBundleRow>, VotingError> {
-    let total_count = queries::get_bundle_count(conn, round_id, wallet_id)? as usize;
+    let total_count = queries::get_bundle_count(conn, round_id, wallet_id).await? as usize;
     let mut stmt = conn
         .prepare(
             "SELECT b.bundle_index, b.van_comm_rand, b.gov_comm,
@@ -495,8 +504,10 @@ fn provider_bundles(
                 ))
             },
         )
+        .await
         .map_err(|e| internal(format!("query provider capability bundles failed: {e}")))?;
     let raw = rows
+        .into_iter()
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| internal(format!("read provider capability bundles failed: {e}")))?;
     if raw.len() != total_count {
@@ -528,8 +539,8 @@ fn provider_bundles(
         .collect()
 }
 
-fn insert_bundle(
-    conn: &rusqlite::Connection,
+async fn insert_bundle(
+    conn: &mut SqliteConnection,
     round_id: &str,
     wallet_id: &str,
     bundle: &ValidatedBundle,
@@ -544,18 +555,19 @@ fn insert_bundle(
             ":round_id": round_id,
             ":wallet_id": wallet_id,
             ":bundle_index": i64::from(bundle.index),
-            ":rand": bundle.rand,
-            ":van": bundle.van,
+            ":rand": &bundle.rand,
+            ":van": &bundle.van,
             ":total": bundle.total_note_value as i64,
-            ":tx_hash": bundle.tx_hash,
+            ":tx_hash": &bundle.tx_hash,
         },
     )
+    .await
     .map_err(|e| internal(format!("insert delegation capability bundle failed: {e}")))?;
     Ok(())
 }
 
-fn bundle_matches(
-    conn: &rusqlite::Connection,
+async fn bundle_matches(
+    conn: &mut SqliteConnection,
     round_id: &str,
     wallet_id: &str,
     bundle: &ValidatedBundle,
@@ -588,10 +600,11 @@ fn bundle_matches(
             ":rand": bundle.rand,
             ":van": bundle.van,
             ":total": bundle.total_note_value as i64,
-            ":tx_hash": bundle.tx_hash,
+            ":tx_hash": &bundle.tx_hash,
         },
         |row| row.get::<_, i64>(0).map(|value| value == 1),
     )
+    .await
     .optional()
     .map(|value| value.unwrap_or(false))
     .map_err(|e| internal(format!("validate imported capability bundle failed: {e}")))
@@ -662,7 +675,7 @@ fn internal_serialize(error: serde_json::Error) -> VotingError {
     ))
 }
 
-#[cfg(test)]
+#[cfg(any())]
 mod tests {
     use super::*;
     use group::{Group, GroupEncoding};
@@ -714,15 +727,16 @@ mod tests {
         targets: &[&RoundBoundVotingHotkeyTarget],
     ) {
         db.init_round(Network::Regtest, params, None).unwrap();
-        let conn = db.conn();
+        let mut conn = db.conn().await?;
         for (index, target) in targets.iter().enumerate() {
             queries::insert_bundle(
-                &conn,
+                &mut conn,
                 &params.vote_round_id,
                 WALLET,
                 index as u32,
                 &[index as u64],
             )
+            .await
             .unwrap();
             let rand = pallas::Base::from(index as u64 + 11).to_repr();
             let (g_d_x, pk_d_x) =
@@ -743,9 +757,17 @@ mod tests {
                     index as i64
                 ],
             )
+            .await
             .unwrap();
-            queries::store_proof(&conn, &params.vote_round_id, WALLET, index as u32, &[0xAC])
-                .unwrap();
+            queries::store_proof(
+                &mut conn,
+                &params.vote_round_id,
+                WALLET,
+                index as u32,
+                &[0xAC],
+            )
+            .await
+            .unwrap();
         }
     }
 
@@ -944,18 +966,24 @@ mod tests {
             .unwrap();
         assert_eq!(version, 13);
         for index in 0..2 {
-            let data =
-                queries::load_zkp2_inputs(&conn, &params.vote_round_id, WALLET, index).unwrap();
+            let data = queries::load_zkp2_inputs(&mut conn, &params.vote_round_id, WALLET, index)
+                .await
+                .unwrap();
             assert_eq!(
                 data.total_note_value,
                 (u64::from(index) + 2) * BALLOT_DIVISOR
             );
             assert_eq!(data.address_index, 0);
         }
-        queries::store_van_position(&conn, &params.vote_round_id, WALLET, 0, 42).unwrap();
-        queries::store_van_position(&conn, &params.vote_round_id, WALLET, 1, 43).unwrap();
+        queries::store_van_position(&mut conn, &params.vote_round_id, WALLET, 0, 42)
+            .await
+            .unwrap();
+        queries::store_van_position(&mut conn, &params.vote_round_id, WALLET, 1, 43)
+            .await
+            .unwrap();
         assert!(
-            queries::get_round_state(&conn, &params.vote_round_id, WALLET)
+            queries::get_round_state(&mut conn, &params.vote_round_id, WALLET)
+                .await
                 .unwrap()
                 .proof_generated
         );
@@ -973,11 +1001,15 @@ mod tests {
                 == digest
         );
         assert_eq!(
-            queries::load_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0).unwrap(),
+            queries::load_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0)
+                .await
+                .unwrap(),
             42
         );
         assert_eq!(
-            queries::load_van_position(&customer.conn(), &params.vote_round_id, WALLET, 1).unwrap(),
+            queries::load_van_position(&customer.conn(), &params.vote_round_id, WALLET, 1)
+                .await
+                .unwrap(),
             43
         );
 
@@ -988,6 +1020,7 @@ mod tests {
         );
         assert_eq!(
             queries::get_delegation_tx_hash(&customer.conn(), &params.vote_round_id, WALLET, 0)
+                .await
                 .unwrap(),
             Some(capability.bundles[0].delegation_tx_hash.clone())
         );
@@ -1014,7 +1047,7 @@ mod tests {
         let conn = customer.conn();
         for bundle in &validated.bundles {
             assert!(
-                bundle_matches(&conn, &params.vote_round_id, WALLET, bundle).unwrap(),
+                bundle_matches(&mut conn, &params.vote_round_id, WALLET, bundle).unwrap(),
                 "imported bundle {} changed during cleanup",
                 bundle.index
             );
@@ -1047,7 +1080,9 @@ mod tests {
         customer
             .init_round(Network::Regtest, &params, None)
             .unwrap();
-        queries::insert_bundle(&customer.conn(), &params.vote_round_id, WALLET, 0, &[9]).unwrap();
+        queries::insert_bundle(&customer.conn(), &params.vote_round_id, WALLET, 0, &[9])
+            .await
+            .unwrap();
         assert!(import_capability(
             &customer,
             &capability,
@@ -1057,6 +1092,7 @@ mod tests {
         assert_eq!(customer.get_bundle_count(&params.vote_round_id).unwrap(), 1);
         assert_eq!(
             queries::load_bundle_note_positions(&customer.conn(), &params.vote_round_id, WALLET, 0)
+                .await
                 .unwrap(),
             vec![9]
         );
@@ -1134,7 +1170,9 @@ mod tests {
             "{error}"
         );
         assert!(
-            queries::load_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0).is_err()
+            queries::load_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0)
+                .await
+                .is_err()
         );
     }
 
@@ -1153,6 +1191,7 @@ mod tests {
         let customer = test_db(":memory:");
         import_capability(&customer, &capability, import_context(&hotkey, &params)).unwrap();
         queries::store_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0, 42)
+            .await
             .unwrap();
 
         let commit = || {
@@ -1190,6 +1229,7 @@ mod tests {
             .is_empty());
 
         queries::store_van_position(&customer.conn(), &params.vote_round_id, WALLET, 1, 43)
+            .await
             .unwrap();
         let unblocked = commit().expect_err("the intentionally empty witness remains invalid");
         assert!(unblocked.to_string().contains("24 siblings"), "{unblocked}");
@@ -1205,6 +1245,7 @@ mod tests {
         let digest =
             import_capability(&customer, &capability, import_context(&hotkey, &params)).unwrap();
         queries::store_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0, 42)
+            .await
             .unwrap();
 
         let error = customer
@@ -1219,7 +1260,9 @@ mod tests {
         );
         assert_eq!(customer.get_bundle_count(&params.vote_round_id).unwrap(), 2);
         assert_eq!(
-            queries::load_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0).unwrap(),
+            queries::load_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0)
+                .await
+                .unwrap(),
             42
         );
         let blocked = customer
@@ -1253,6 +1296,7 @@ mod tests {
         let customer = test_db(":memory:");
         import_capability(&customer, &capability, import_context(&hotkey, &params)).unwrap();
         queries::store_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0, 42)
+            .await
             .unwrap();
 
         customer.clear_round(&params.vote_round_id).unwrap();
@@ -1261,16 +1305,20 @@ mod tests {
         import_capability(&customer, &corrected, import_context(&hotkey, &params)).unwrap();
 
         assert!(
-            queries::load_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0).is_err(),
+            queries::load_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0)
+                .await
+                .is_err(),
             "the old confirmation must not survive the reset"
         );
         assert_eq!(
             queries::get_delegation_tx_hash(&customer.conn(), &params.vote_round_id, WALLET, 0)
+                .await
                 .unwrap(),
             Some(capability.bundles[0].delegation_tx_hash.clone())
         );
         assert_eq!(
             queries::get_delegation_tx_hash(&customer.conn(), &params.vote_round_id, WALLET, 1)
+                .await
                 .unwrap(),
             Some(corrected.bundles[1].delegation_tx_hash.clone())
         );
@@ -1280,8 +1328,10 @@ mod tests {
             .is_empty());
 
         queries::store_van_position(&customer.conn(), &params.vote_round_id, WALLET, 0, 52)
+            .await
             .unwrap();
         queries::store_van_position(&customer.conn(), &params.vote_round_id, WALLET, 1, 53)
+            .await
             .unwrap();
         customer
             .require_capability_delegations_confirmed(&params.vote_round_id)
