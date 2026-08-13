@@ -210,6 +210,18 @@ fn reconstruct_note(
     let note_value = NoteValue::from_raw(full_note.value);
     let mut matched_note = None;
     for version in supported_note_versions() {
+        #[cfg(feature = "zsa-orchard")]
+        let Some(candidate) = Option::<orchard::Note>::from(orchard::Note::from_parts(
+            address,
+            note_value,
+            orchard::note::AssetBase::zatoshi(),
+            rho,
+            rseed,
+            *version,
+        )) else {
+            continue;
+        };
+        #[cfg(not(feature = "zsa-orchard"))]
         let Some(candidate) = Option::<orchard::Note>::from(orchard::Note::from_parts(
             address, note_value, rho, rseed, *version,
         )) else {

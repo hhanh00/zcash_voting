@@ -86,6 +86,11 @@ secrecy = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 zcash_note_encryption = "0.4.2"
 
+[features]
+default = []
+# Selects API adaptations for zkool2's ZSA Orchard/librustzcash forks.
+zsa-orchard = []
+
 # Smoke-only CLI invoked by tests/pir-smoke.sh / `make pir-smoke`.
 # An example target keeps Cargo test filters from being forwarded as commands.
 [[example]]

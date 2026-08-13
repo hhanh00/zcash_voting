@@ -164,6 +164,16 @@ fn make_note(
     version: NoteVersion,
 ) -> Result<(orchard::Note, [u8; 32]), VotingError> {
     let (rseed, rseed_bytes) = random_rseed(rng, &rho);
+    #[cfg(feature = "zsa-orchard")]
+    let note = orchard::Note::from_parts(
+        addr,
+        value,
+        orchard::note::AssetBase::zatoshi(),
+        rho,
+        rseed,
+        version,
+    );
+    #[cfg(not(feature = "zsa-orchard"))]
     let note = orchard::Note::from_parts(addr, value, rho, rseed, version);
     if !bool::from(note.is_some()) {
         return Err(VotingError::Internal {
@@ -619,6 +629,8 @@ pub(crate) fn build_governance_pczt(
             sapling: None,
             orchard: orchard_bundle,
             ironwood: ironwood_bundle,
+            #[cfg(feature = "zsa-orchard")]
+            issuance_builder: None,
         };
         let pczt = pczt::roles::creator::Creator::build_from_parts(parts).ok_or_else(|| {
             VotingError::Internal {
@@ -628,6 +640,13 @@ pub(crate) fn build_governance_pczt(
         })?;
 
         // Run IO Finalizer so the Signer (Keystone) can compute the sighash.
+        #[cfg(feature = "zsa-orchard")]
+        let (pczt, _) = pczt::roles::io_finalizer::IoFinalizer::new(pczt)
+            .finalize_io()
+            .map_err(|e| VotingError::Internal {
+                message: format!("IoFinalizer::finalize_io failed: {:?}", e),
+            })?;
+        #[cfg(not(feature = "zsa-orchard"))]
         let pczt = pczt::roles::io_finalizer::IoFinalizer::new(pczt)
             .finalize_io()
             .map_err(|e| VotingError::Internal {

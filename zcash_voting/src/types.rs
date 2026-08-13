@@ -80,6 +80,8 @@ impl Parameters for Network {
                 NetworkUpgrade::Nu6_3 => {
                     Some(BlockHeight::from_u32(REGTEST_NU6_3_ACTIVATION_HEIGHT))
                 }
+                #[cfg(feature = "zsa-orchard")]
+                NetworkUpgrade::Nu7 => None,
             },
         }
     }
