@@ -446,7 +446,7 @@ pub async fn import_delegation_capability(
     }
     (&mut *tx)
         .execute(
-            "UPDATE rounds SET phase = :phase
+            "UPDATE voting_rounds SET phase = :phase
          WHERE round_id = :round_id AND wallet_id = :wallet_id AND phase < :phase",
             named_params! {
                 ":phase": RoundPhase::DelegationProved as i32,
@@ -476,13 +476,13 @@ async fn provider_bundles(
         .prepare(
             "SELECT b.bundle_index, b.van_comm_rand, b.gov_comm,
                     b.total_note_value, b.address_index, b.delegation_tx_hash
-             FROM bundles b
+             FROM voting_bundles b
              WHERE b.round_id = :round_id AND b.wallet_id = :wallet_id
                AND b.note_positions_blob IS NOT NULL
                AND b.van_comm_rand IS NOT NULL AND b.gov_comm IS NOT NULL
                AND b.total_note_value IS NOT NULL AND b.address_index IS NOT NULL
                AND EXISTS (
-                   SELECT 1 FROM proofs p
+                   SELECT 1 FROM voting_proofs p
                    WHERE p.round_id = b.round_id AND p.wallet_id = b.wallet_id
                      AND p.bundle_index = b.bundle_index
                      AND p.success = 1 AND p.proof IS NOT NULL
@@ -546,7 +546,7 @@ async fn insert_bundle(
     bundle: &ValidatedBundle,
 ) -> Result<(), VotingError> {
     conn.execute(
-        "INSERT INTO bundles (
+        "INSERT INTO voting_bundles (
              round_id, wallet_id, bundle_index, van_comm_rand, gov_comm,
              total_note_value, address_index, delegation_tx_hash
          ) VALUES (:round_id, :wallet_id, :bundle_index, :rand, :van,
@@ -586,11 +586,11 @@ async fn bundle_matches(
                 AND b.total_note_value = :total AND b.address_index = 0
                 AND b.delegation_tx_hash = :tx_hash
                 AND NOT EXISTS (
-                    SELECT 1 FROM proofs p
+                    SELECT 1 FROM voting_proofs p
                     WHERE p.round_id = b.round_id AND p.wallet_id = b.wallet_id
                       AND p.bundle_index = b.bundle_index
                 ), 0)
-         FROM bundles b
+         FROM voting_bundles b
          WHERE b.round_id = :round_id AND b.wallet_id = :wallet_id
            AND b.bundle_index = :bundle_index",
         named_params! {
@@ -745,7 +745,7 @@ mod tests {
             let total = (index as u64 + 2) * BALLOT_DIVISOR + 7;
             let van = construct_van(&g_d_x, &pk_d_x, total, target.vote_round_id(), &rand).unwrap();
             conn.execute(
-                "UPDATE bundles SET van_comm_rand=?1, gov_comm=?2,
+                "UPDATE voting_bundles SET van_comm_rand=?1, gov_comm=?2,
                  total_note_value=?3, address_index=0
                  WHERE round_id=?4 AND wallet_id=?5 AND bundle_index=?6",
                 params![
@@ -875,7 +875,7 @@ mod tests {
         .unwrap();
         db.conn()
             .execute(
-                "UPDATE bundles SET gov_comm=?1 WHERE round_id=?2 AND wallet_id=?3 AND bundle_index=1",
+                "UPDATE voting_bundles SET gov_comm=?1 WHERE round_id=?2 AND wallet_id=?3 AND bundle_index=1",
                 params![mixed_van, params.vote_round_id, WALLET],
             )
             .unwrap();

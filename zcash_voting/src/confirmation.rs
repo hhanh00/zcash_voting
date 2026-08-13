@@ -202,7 +202,7 @@ async fn require_vote_recovery_json(
     let recovery_json: Option<Option<String>> = conn
         .query_row(
             "SELECT commitment_bundle_json
-             FROM votes
+             FROM voting_votes
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index
@@ -406,7 +406,7 @@ async fn load_bundle_confirmation_fields(
 ) -> Result<(Option<String>, Option<i64>), VotingError> {
     conn.query_row(
         "SELECT delegation_tx_hash, van_leaf_position
-         FROM bundles
+         FROM voting_bundles
          WHERE round_id = :round_id
            AND wallet_id = :wallet_id
            AND bundle_index = :bundle_index",
@@ -426,7 +426,6 @@ async fn load_bundle_confirmation_fields(
         message: format!("bundle not found for round={round_id}, bundle={bundle_index}"),
     })
 }
-
 fn delegation_van_position_should_update(
     stored_van_position: Option<i64>,
     van_leaf_position: u32,
@@ -531,7 +530,7 @@ mod tests {
     fn insert_bundle(db: &VotingDb, bundle_index: u32) {
         let conn = db.conn();
         conn.execute(
-            "INSERT INTO bundles (
+            "INSERT INTO voting_bundles (
                 round_id, wallet_id, bundle_index, address_index,
                 total_note_value, van_comm_rand, gov_comm, alpha
             ) VALUES (
@@ -555,7 +554,7 @@ mod tests {
     fn insert_vote(db: &VotingDb, bundle_index: u32, proposal_id: u32) {
         let conn = db.conn();
         conn.execute(
-            "INSERT INTO votes (
+            "INSERT INTO voting_votes (
                 round_id, wallet_id, bundle_index, proposal_id, choice,
                 commitment, created_at
             ) VALUES (
@@ -624,7 +623,7 @@ mod tests {
     fn store_recovery_json(db: &VotingDb, bundle_index: u32, proposal_id: u32, json: &str) {
         let conn = db.conn();
         conn.execute(
-            "UPDATE votes SET commitment_bundle_json = :json
+            "UPDATE voting_votes SET commitment_bundle_json = :json
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index
@@ -986,7 +985,7 @@ mod tests {
         let pos: Option<i64> = db
             .conn()
             .query_row(
-                "SELECT vc_tree_position FROM votes
+                "SELECT vc_tree_position FROM voting_votes
                  WHERE round_id = :round_id
                    AND wallet_id = :wallet_id
                    AND bundle_index = 0
@@ -1218,7 +1217,7 @@ mod tests {
         let (json, pos): (Option<String>, Option<i64>) = db
             .conn()
             .query_row(
-                "SELECT commitment_bundle_json, vc_tree_position FROM votes
+                "SELECT commitment_bundle_json, vc_tree_position FROM voting_votes
                  WHERE round_id = :round_id
                    AND wallet_id = :wallet_id
                    AND bundle_index = 0
@@ -1271,7 +1270,7 @@ mod tests {
         let (json, pos): (Option<String>, Option<i64>) = db
             .conn()
             .query_row(
-                "SELECT commitment_bundle_json, vc_tree_position FROM votes
+                "SELECT commitment_bundle_json, vc_tree_position FROM voting_votes
                  WHERE round_id = :round_id
                    AND wallet_id = :wallet_id
                    AND bundle_index = 0
@@ -1361,7 +1360,7 @@ mod tests {
         let (json, pos): (Option<String>, Option<i64>) = db
             .conn()
             .query_row(
-                "SELECT commitment_bundle_json, vc_tree_position FROM votes
+                "SELECT commitment_bundle_json, vc_tree_position FROM voting_votes
                  WHERE round_id = :round_id
                    AND wallet_id = :wallet_id
                    AND bundle_index = 0

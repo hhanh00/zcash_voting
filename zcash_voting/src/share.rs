@@ -247,7 +247,7 @@ mod tests {
         let json = serialize_recovery(&recovery_bundle_fixture()).unwrap();
         db.conn()
             .execute(
-                "UPDATE votes SET commitment_bundle_json = :json, vc_tree_position = :pos
+                "UPDATE voting_votes SET commitment_bundle_json = :json, vc_tree_position = :pos
                  WHERE round_id = :round_id AND wallet_id = :wallet_id
                    AND bundle_index = 0 AND proposal_id = 1",
                 rusqlite::named_params! {
@@ -397,7 +397,7 @@ mod tests {
 
         db.conn()
             .execute(
-                "UPDATE share_delegations SET nullifier = :nullifier
+                "UPDATE voting_share_delegations SET nullifier = :nullifier
                  WHERE round_id = :round_id
                    AND wallet_id = :wallet_id
                    AND bundle_index = 0

@@ -84,7 +84,7 @@ impl VotingDb {
         )
         .await?;
         tx.execute(
-            "INSERT INTO ballot_intent
+            "INSERT INTO voting_ballot_intent
                 (round_id, wallet_id, proposal_id, skipped, choice, created_at, updated_at)
              VALUES (:round_id, :wallet_id, :proposal_id, :skipped, :choice, :now, :now)
              ON CONFLICT(round_id, wallet_id, proposal_id)
@@ -126,7 +126,7 @@ impl VotingDb {
         let wallet_id = self.wallet_id();
         let mut stmt = conn
             .prepare(
-                "SELECT proposal_id, skipped, choice FROM ballot_intent
+                "SELECT proposal_id, skipped, choice FROM voting_ballot_intent
                  WHERE round_id = :round_id AND wallet_id = :wallet_id
                  ORDER BY proposal_id",
             )
@@ -1155,7 +1155,7 @@ mod tests {
         let conn = db.conn();
         let rows = conn
             .execute(
-                "UPDATE votes SET commitment_bundle_json = :json, vc_tree_position = :pos
+                "UPDATE voting_votes SET commitment_bundle_json = :json, vc_tree_position = :pos
                  WHERE round_id = :round_id
                    AND wallet_id = :wallet_id
                    AND bundle_index = :bundle_index
@@ -1572,7 +1572,7 @@ mod tests {
         confirm_vote_fixture(&db, 0, 2, 0);
         db.conn()
             .execute(
-                "INSERT INTO ballot_intent
+                "INSERT INTO voting_ballot_intent
                     (round_id, wallet_id, proposal_id, skipped, choice, created_at, updated_at)
                  VALUES (:round_id, :wallet_id, :proposal_id, 0, 1, 1, 1)",
                 named_params! {

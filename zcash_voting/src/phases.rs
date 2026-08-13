@@ -157,7 +157,7 @@ impl VotingDb {
             .query_row(
                 "SELECT b.pczt_sighash IS NOT NULL OR b.rk IS NOT NULL,
                         EXISTS(
-                            SELECT 1 FROM proofs p
+                            SELECT 1 FROM voting_proofs p
                             WHERE p.round_id = b.round_id
                               AND p.wallet_id = b.wallet_id
                               AND p.bundle_index = b.bundle_index
@@ -165,7 +165,7 @@ impl VotingDb {
                         ),
                         b.delegation_tx_hash IS NOT NULL,
                         b.van_leaf_position IS NOT NULL
-                 FROM bundles b
+                 FROM voting_bundles b
                  WHERE b.round_id = :round_id
                    AND b.wallet_id = :wallet_id
                    AND b.bundle_index = :bundle_index",
@@ -208,7 +208,7 @@ impl VotingDb {
                 "SELECT b.bundle_index,
                         b.pczt_sighash IS NOT NULL OR b.rk IS NOT NULL,
                         EXISTS(
-                            SELECT 1 FROM proofs p
+                            SELECT 1 FROM voting_proofs p
                             WHERE p.round_id = b.round_id
                               AND p.wallet_id = b.wallet_id
                               AND p.bundle_index = b.bundle_index
@@ -216,7 +216,7 @@ impl VotingDb {
                         ),
                         b.delegation_tx_hash IS NOT NULL,
                         b.van_leaf_position IS NOT NULL
-                 FROM bundles b
+                 FROM voting_bundles b
                  WHERE b.round_id = :round_id
                    AND b.wallet_id = :wallet_id
                  ORDER BY b.bundle_index",
@@ -266,7 +266,7 @@ impl VotingDb {
             .query_row(
                 "SELECT tx_hash IS NOT NULL, vc_tree_position IS NOT NULL,
                         commitment_bundle_json IS NOT NULL
-                 FROM votes
+                 FROM voting_votes
                  WHERE round_id = :round_id
                    AND wallet_id = :wallet_id
                    AND bundle_index = :bundle_index
@@ -309,7 +309,7 @@ impl VotingDb {
             .prepare(
                 "SELECT bundle_index, proposal_id, tx_hash IS NOT NULL,
                         vc_tree_position IS NOT NULL, commitment_bundle_json IS NOT NULL
-                 FROM votes
+                 FROM voting_votes
                  WHERE round_id = :round_id AND wallet_id = :wallet_id
                  ORDER BY bundle_index, proposal_id",
             )
@@ -357,7 +357,7 @@ impl VotingDb {
         let phase = conn
             .query_row(
                 "SELECT confirmed
-                 FROM share_delegations
+                 FROM voting_share_delegations
                  WHERE round_id = :round_id
                    AND wallet_id = :wallet_id
                    AND bundle_index = :bundle_index
@@ -401,7 +401,7 @@ impl VotingDb {
         let mut stmt = conn
             .prepare(
                 "SELECT bundle_index, proposal_id, share_index, confirmed
-                 FROM share_delegations
+                 FROM voting_share_delegations
                  WHERE round_id = :round_id AND wallet_id = :wallet_id
                  ORDER BY bundle_index, proposal_id, share_index",
             )
@@ -463,7 +463,7 @@ mod tests {
     ) {
         let conn = db.conn();
         conn.execute(
-            "UPDATE votes SET commitment_bundle_json = :json, vc_tree_position = :pos
+            "UPDATE voting_votes SET commitment_bundle_json = :json, vc_tree_position = :pos
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index
@@ -514,7 +514,7 @@ mod tests {
 
         db.conn()
             .execute(
-                "UPDATE bundles SET pczt_sighash = X'01', rk = X'02'
+                "UPDATE voting_bundles SET pczt_sighash = X'01', rk = X'02'
                  WHERE round_id = ?1 AND wallet_id = ?2 AND bundle_index = 0",
                 rusqlite::params![ROUND_ID, WALLET_ID],
             )

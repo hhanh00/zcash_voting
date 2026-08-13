@@ -126,7 +126,7 @@ pub async fn insert_round(
         .as_secs() as i64;
 
     conn.execute(
-        "INSERT INTO rounds (round_id, wallet_id, network, snapshot_height, ea_pk, nc_root, nullifier_imt_root, session_json, phase, created_at)
+        "INSERT INTO voting_rounds (round_id, wallet_id, network, snapshot_height, ea_pk, nc_root, nullifier_imt_root, session_json, phase, created_at)
          VALUES (:round_id, :wallet_id, :network, :snapshot_height, :ea_pk, :nc_root, :nullifier_imt_root, :session_json, :phase, :created_at)",
         named_params! {
             ":round_id": &params.vote_round_id,
@@ -161,7 +161,7 @@ pub async fn update_round_phase(
 ) -> Result<(), VotingError> {
     let rows = conn
         .execute(
-            "UPDATE rounds SET phase = :phase WHERE round_id = :round_id AND wallet_id = :wallet_id",
+            "UPDATE voting_rounds SET phase = :phase WHERE round_id = :round_id AND wallet_id = :wallet_id",
             named_params! {
                 ":phase": phase as i32,
                 ":round_id": round_id,
@@ -194,7 +194,7 @@ pub async fn advance_round_phase(
     let requested_rank = phase as i32;
     let rows = conn
         .execute(
-            "UPDATE rounds
+            "UPDATE voting_rounds
              SET phase = :phase
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
@@ -251,7 +251,7 @@ pub async fn load_round_params_with_network(
     wallet_id: &str,
 ) -> Result<(VotingRoundParams, Network), VotingError> {
     conn.query_row(
-        "SELECT round_id, network, snapshot_height, ea_pk, nc_root, nullifier_imt_root FROM rounds WHERE round_id = :round_id AND wallet_id = :wallet_id",
+        "SELECT round_id, network, snapshot_height, ea_pk, nc_root, nullifier_imt_root FROM voting_rounds WHERE round_id = :round_id AND wallet_id = :wallet_id",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
         |row| {
             let network: String = row.get(1)?;
@@ -280,7 +280,7 @@ pub async fn load_round_network(
     wallet_id: &str,
 ) -> Result<Network, VotingError> {
     conn.query_row(
-        "SELECT network FROM rounds WHERE round_id = :round_id AND wallet_id = :wallet_id",
+        "SELECT network FROM voting_rounds WHERE round_id = :round_id AND wallet_id = :wallet_id",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
         |row| row.get::<_, String>(0),
     )
@@ -297,7 +297,7 @@ pub async fn has_round(
     wallet_id: &str,
 ) -> Result<bool, VotingError> {
     conn.query_row(
-        "SELECT 1 FROM rounds WHERE round_id = :round_id AND wallet_id = :wallet_id LIMIT 1",
+        "SELECT 1 FROM voting_rounds WHERE round_id = :round_id AND wallet_id = :wallet_id LIMIT 1",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
         |_| Ok(()),
     )
@@ -316,7 +316,7 @@ pub async fn get_round_state(
 ) -> Result<RoundState, VotingError> {
     let (phase_int, network, snapshot_height): (i32, String, i64) = conn
         .query_row(
-            "SELECT phase, network, snapshot_height FROM rounds WHERE round_id = :round_id AND wallet_id = :wallet_id",
+            "SELECT phase, network, snapshot_height FROM voting_rounds WHERE round_id = :round_id AND wallet_id = :wallet_id",
             named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -331,7 +331,7 @@ pub async fn get_round_state(
     // the legacy UI field false until every delegation transaction lands.
     let bundle_count: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id",
+            "SELECT COUNT(*) FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id",
             named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
             |row| row.get(0),
         )
@@ -346,11 +346,11 @@ pub async fn get_round_state(
         let proven_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*)
-                 FROM bundles b
+                 FROM voting_bundles b
                  WHERE b.round_id = :round_id AND b.wallet_id = :wallet_id
                    AND (
                        EXISTS (
-                           SELECT 1 FROM proofs p
+                           SELECT 1 FROM voting_proofs p
                            WHERE p.round_id = b.round_id
                              AND p.wallet_id = b.wallet_id
                              AND p.bundle_index = b.bundle_index
@@ -375,7 +375,7 @@ pub async fn get_round_state(
 
         let van_positions_count: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND van_leaf_position IS NOT NULL",
+                "SELECT COUNT(*) FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND van_leaf_position IS NOT NULL",
                 named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
                 |row| row.get(0),
             )
@@ -404,7 +404,7 @@ pub async fn list_rounds(
 ) -> Result<Vec<RoundSummary>, VotingError> {
     let rounds = query_map(
         conn,
-        "SELECT round_id, wallet_id, phase, network, snapshot_height, created_at FROM rounds WHERE wallet_id = :wallet_id ORDER BY created_at DESC",
+        "SELECT round_id, wallet_id, phase, network, snapshot_height, created_at FROM voting_rounds WHERE wallet_id = :wallet_id ORDER BY created_at DESC",
         named_params! { ":wallet_id": wallet_id },
         |row| {
             Ok(RoundSummary {
@@ -434,7 +434,7 @@ pub async fn clear_round(
     wallet_id: &str,
 ) -> Result<(), VotingError> {
     conn.execute(
-        "DELETE FROM rounds WHERE round_id = :round_id AND wallet_id = :wallet_id",
+        "DELETE FROM voting_rounds WHERE round_id = :round_id AND wallet_id = :wallet_id",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
     )
     .await
@@ -462,7 +462,7 @@ pub async fn insert_bundle(
     let positions_blob = note_positions_blob(note_positions);
 
     conn.execute(
-        "INSERT INTO bundles (round_id, wallet_id, bundle_index, note_positions_blob)
+        "INSERT INTO voting_bundles (round_id, wallet_id, bundle_index, note_positions_blob)
          VALUES (:round_id, :wallet_id, :bundle_index, :note_positions_blob)",
         named_params! {
             ":round_id": round_id,
@@ -491,7 +491,7 @@ pub async fn insert_bundle_notes(
     let identity_hashes_blob = note_identity_hashes_blob(notes);
 
     conn.execute(
-        "INSERT INTO bundles (round_id, wallet_id, bundle_index, note_positions_blob, note_identity_hashes_blob)
+        "INSERT INTO voting_bundles (round_id, wallet_id, bundle_index, note_positions_blob, note_identity_hashes_blob)
          VALUES (:round_id, :wallet_id, :bundle_index, :note_positions_blob, :note_identity_hashes_blob)",
         named_params! {
             ":round_id": round_id,
@@ -532,7 +532,7 @@ pub async fn get_bundle_count(
     wallet_id: &str,
 ) -> Result<u32, VotingError> {
     conn.query_row(
-        "SELECT COUNT(*) FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id",
+        "SELECT COUNT(*) FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
         |row| row.get::<_, i64>(0).map(|c| c as u32),
     )
@@ -551,7 +551,7 @@ async fn round_has_imported_capability_bundles(
     conn.query_row(
         "SELECT EXISTS (
              SELECT 1
-             FROM bundles
+             FROM voting_bundles
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
                AND note_positions_blob IS NULL
@@ -581,7 +581,7 @@ pub(crate) async fn require_capability_delegations_confirmed(
     let pending_bundle = conn
         .query_row(
             "SELECT pending.bundle_index
-             FROM bundles pending
+             FROM voting_bundles pending
              WHERE pending.round_id = :round_id
                AND pending.wallet_id = :wallet_id
                AND pending.van_leaf_position IS NULL
@@ -616,7 +616,7 @@ pub async fn load_bundle_note_positions(
 ) -> Result<Vec<u64>, VotingError> {
     let blob: Vec<u8> = conn
         .query_row(
-            "SELECT note_positions_blob FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+            "SELECT note_positions_blob FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
             named_params! {
                 ":round_id": round_id,
                 ":wallet_id": wallet_id,
@@ -641,7 +641,7 @@ pub async fn require_bundle_notes(
 ) -> Result<(), VotingError> {
     let (positions_blob, identity_hashes_blob): (Vec<u8>, Option<Vec<u8>>) = conn
         .query_row(
-            "SELECT note_positions_blob, note_identity_hashes_blob FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+            "SELECT note_positions_blob, note_identity_hashes_blob FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
             named_params! {
                 ":round_id": round_id,
                 ":wallet_id": wallet_id,
@@ -867,7 +867,7 @@ async fn store_delegation_data_inner(
 
     let existing: Option<(Option<Vec<u8>>, Option<Vec<u8>>, Option<Vec<u8>>)> = conn
         .query_row(
-            "SELECT padded_note_secrets, pczt_sighash, tx1_effects FROM bundles \
+            "SELECT padded_note_secrets, pczt_sighash, tx1_effects FROM voting_bundles \
              WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
             named_params! {
                 ":round_id": round_id,
@@ -922,7 +922,7 @@ async fn store_delegation_data_inner(
 
     let rows = conn
         .execute(
-            "UPDATE bundles SET van_comm_rand = :rand, dummy_nullifiers = :dummies, \
+            "UPDATE voting_bundles SET van_comm_rand = :rand, dummy_nullifiers = :dummies, \
              rho_signed = :rho, padded_note_data = :padded, nf_signed = :nf_signed, \
              cmx_new = :cmx_new, alpha = :alpha, rseed_signed = :rseed_signed, \
              rseed_output = :rseed_output, gov_comm = :gov_comm, \
@@ -982,7 +982,7 @@ pub async fn load_nf_signed(
     bundle_index: u32,
 ) -> Result<Vec<u8>, VotingError> {
     conn.query_row(
-        "SELECT nf_signed FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        "SELECT nf_signed FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| row.get(0),
     )
@@ -1000,7 +1000,7 @@ pub async fn load_cmx_new(
     bundle_index: u32,
 ) -> Result<Vec<u8>, VotingError> {
     conn.query_row(
-        "SELECT cmx_new FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        "SELECT cmx_new FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| row.get(0),
     )
@@ -1018,7 +1018,7 @@ pub async fn load_alpha(
     bundle_index: u32,
 ) -> Result<Vec<u8>, VotingError> {
     conn.query_row(
-        "SELECT alpha FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        "SELECT alpha FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| row.get(0),
     )
@@ -1036,7 +1036,7 @@ pub async fn load_rseed_signed(
     bundle_index: u32,
 ) -> Result<Vec<u8>, VotingError> {
     conn.query_row(
-        "SELECT rseed_signed FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        "SELECT rseed_signed FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| row.get(0),
     )
@@ -1054,7 +1054,7 @@ pub async fn load_rseed_output(
     bundle_index: u32,
 ) -> Result<Vec<u8>, VotingError> {
     conn.query_row(
-        "SELECT rseed_output FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        "SELECT rseed_output FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| row.get(0),
     )
@@ -1075,7 +1075,7 @@ pub async fn store_padded_note_secrets_if_absent(
     let secrets_blob = encode_padded_note_secrets(padded_note_secrets);
     let rows = conn
         .execute(
-            "UPDATE bundles SET padded_note_secrets = :secrets \
+            "UPDATE voting_bundles SET padded_note_secrets = :secrets \
              WHERE round_id = :round_id AND wallet_id = :wallet_id \
                AND bundle_index = :bundle_index AND padded_note_secrets IS NULL",
             named_params! {
@@ -1093,7 +1093,7 @@ pub async fn store_padded_note_secrets_if_absent(
     if rows == 0 {
         let exists = conn
             .query_row(
-                "SELECT 1 FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+                "SELECT 1 FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
                 named_params! {
                     ":round_id": round_id,
                     ":wallet_id": wallet_id,
@@ -1129,7 +1129,7 @@ pub async fn load_padded_note_secrets_optional(
 ) -> Result<Option<Vec<(Vec<u8>, Vec<u8>)>>, VotingError> {
     let blob: Option<Vec<u8>> = conn
         .query_row(
-            "SELECT padded_note_secrets FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+            "SELECT padded_note_secrets FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
             named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
             |row| row.get(0),
         )
@@ -1167,7 +1167,7 @@ pub async fn load_pczt_sighash(
     bundle_index: u32,
 ) -> Result<Vec<u8>, VotingError> {
     conn.query_row(
-        "SELECT pczt_sighash FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        "SELECT pczt_sighash FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| row.get(0),
     )
@@ -1186,7 +1186,7 @@ pub async fn load_tx1_effects(
 ) -> Result<Vec<u8>, VotingError> {
     let effects: Vec<u8> = conn
         .query_row(
-            "SELECT tx1_effects FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+            "SELECT tx1_effects FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
             named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
             |row| row.get(0),
         )
@@ -1209,7 +1209,7 @@ pub async fn load_van_comm_rand(
     bundle_index: u32,
 ) -> Result<Vec<u8>, VotingError> {
     conn.query_row(
-        "SELECT van_comm_rand FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        "SELECT van_comm_rand FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| row.get(0),
     )
@@ -1229,7 +1229,7 @@ pub async fn load_dummy_nullifiers(
 ) -> Result<Vec<Vec<u8>>, VotingError> {
     let blob: Vec<u8> = conn
         .query_row(
-            "SELECT dummy_nullifiers FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+            "SELECT dummy_nullifiers FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
             named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
             |row| row.get(0),
         )
@@ -1260,7 +1260,7 @@ pub async fn load_rho_signed(
     bundle_index: u32,
 ) -> Result<Vec<u8>, VotingError> {
     conn.query_row(
-        "SELECT rho_signed FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        "SELECT rho_signed FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| row.get(0),
     )
@@ -1279,7 +1279,7 @@ pub async fn load_padded_cmx(
 ) -> Result<Vec<Vec<u8>>, VotingError> {
     let blob: Vec<u8> = conn
         .query_row(
-            "SELECT padded_note_data FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+            "SELECT padded_note_data FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
             named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
             |row| row.get(0),
         )
@@ -1331,7 +1331,7 @@ pub async fn load_zkp2_inputs(
 ) -> Result<Zkp2DelegationData, VotingError> {
     let data = conn.query_row(
         "SELECT b.van_comm_rand, b.total_note_value, b.address_index, r.ea_pk, r.round_id \
-         FROM bundles b JOIN rounds r ON b.round_id = r.round_id AND b.wallet_id = r.wallet_id \
+         FROM voting_bundles b JOIN voting_rounds r ON b.round_id = r.round_id AND b.wallet_id = r.wallet_id \
          WHERE b.round_id = :round_id AND b.wallet_id = :wallet_id AND b.bundle_index = :bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| {
@@ -1355,7 +1355,7 @@ pub async fn load_zkp2_inputs(
     let mut authority = MAX_PROPOSAL_AUTHORITY;
     let rows = query_map(
             conn,
-            "SELECT proposal_id FROM votes WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index AND tx_hash IS NOT NULL",
+            "SELECT proposal_id FROM voting_votes WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index AND tx_hash IS NOT NULL",
             named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
             |row| row.get::<_, i64>(0),
         )
@@ -1390,7 +1390,7 @@ pub async fn store_van_position(
 ) -> Result<(), VotingError> {
     let rows = conn
         .execute(
-            "UPDATE bundles SET van_leaf_position = :position WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+            "UPDATE voting_bundles SET van_leaf_position = :position WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
             named_params! {
                 ":position": position as i64,
                 ":round_id": round_id,
@@ -1421,7 +1421,7 @@ pub async fn load_van_position(
     bundle_index: u32,
 ) -> Result<u32, VotingError> {
     conn.query_row(
-        "SELECT van_leaf_position FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        "SELECT van_leaf_position FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| row.get::<_, Option<i64>>(0),
     )
@@ -1457,13 +1457,13 @@ pub(crate) async fn load_van_tree_entries(
         conn,
         "SELECT b.bundle_index, b.van_leaf_position, b.gov_comm,
                     EXISTS (
-                        SELECT 1 FROM votes v
+                        SELECT 1 FROM voting_votes v
                         WHERE v.round_id = b.round_id
                           AND v.wallet_id = b.wallet_id
                           AND v.bundle_index = b.bundle_index
                           AND v.tx_hash IS NOT NULL
                     )
-             FROM bundles b
+             FROM voting_bundles b
              WHERE b.round_id = :round_id
                AND b.wallet_id = :wallet_id
                AND b.van_leaf_position IS NOT NULL
@@ -1609,7 +1609,7 @@ async fn store_proof_result_fields_inner(
     ) = conn
         .query_row(
             "SELECT rk, gov_nullifiers_blob, nf_signed, cmx_new, gov_comm \
-             FROM bundles \
+             FROM voting_bundles \
              WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
             named_params! {
                 ":round_id": round_id,
@@ -1640,7 +1640,7 @@ async fn store_proof_result_fields_inner(
 
     let rows = conn
         .execute(
-            "UPDATE bundles SET rk = :rk, gov_nullifiers_blob = :gov_nullifiers_blob, \
+            "UPDATE voting_bundles SET rk = :rk, gov_nullifiers_blob = :gov_nullifiers_blob, \
              nf_signed = :nf_signed, cmx_new = :cmx_new \
              WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
             named_params! {
@@ -1714,7 +1714,7 @@ pub async fn load_delegation_submission_data(
         .query_row(
             "SELECT p.proof, b.rk, b.nf_signed, b.cmx_new, b.gov_comm, \
              b.gov_nullifiers_blob, b.alpha, b.round_id, b.tx1_effects \
-             FROM bundles b JOIN proofs p ON b.round_id = p.round_id AND b.bundle_index = p.bundle_index AND b.wallet_id = p.wallet_id \
+             FROM voting_bundles b JOIN voting_proofs p ON b.round_id = p.round_id AND b.bundle_index = p.bundle_index AND b.wallet_id = p.wallet_id \
              WHERE b.round_id = :round_id AND b.wallet_id = :wallet_id AND b.bundle_index = :bundle_index AND p.success = 1",
             named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
             |row| {
@@ -1777,7 +1777,7 @@ pub async fn store_tree_state(
     tree_state: &[u8],
 ) -> Result<(), VotingError> {
     conn.execute(
-        "INSERT OR REPLACE INTO cached_tree_state (round_id, wallet_id, snapshot_height, tree_state)
+        "INSERT OR REPLACE INTO voting_cached_tree_state (round_id, wallet_id, snapshot_height, tree_state)
          VALUES (:round_id, :wallet_id, :snapshot_height, :tree_state)",
         named_params! {
             ":round_id": round_id,
@@ -1799,7 +1799,7 @@ pub async fn load_tree_state(
     wallet_id: &str,
 ) -> Result<Vec<u8>, VotingError> {
     conn.query_row(
-        "SELECT tree_state FROM cached_tree_state WHERE round_id = :round_id AND wallet_id = :wallet_id",
+        "SELECT tree_state FROM voting_cached_tree_state WHERE round_id = :round_id AND wallet_id = :wallet_id",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
         |row| row.get(0),
     )
@@ -1831,7 +1831,7 @@ pub async fn witness_count(
     bundle_index: u32,
 ) -> Result<usize, VotingError> {
     conn.query_row(
-        "SELECT COUNT(*) FROM witnesses WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        "SELECT COUNT(*) FROM voting_witnesses WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| row.get::<_, i64>(0).map(|c| c as usize),
     )
@@ -1895,7 +1895,7 @@ async fn insert_witnesses(
         let auth_blob: Vec<u8> = w.auth_path.iter().flat_map(|h| h.iter().copied()).collect();
 
         conn.execute(
-            "INSERT OR REPLACE INTO witnesses (round_id, wallet_id, bundle_index, note_position, note_commitment, root, auth_path, created_at)
+            "INSERT OR REPLACE INTO voting_witnesses (round_id, wallet_id, bundle_index, note_position, note_commitment, root, auth_path, created_at)
              VALUES (:round_id, :wallet_id, :bundle_index, :position, :commitment, :root, :auth_path, :created_at)",
             named_params! {
                 ":round_id": round_id,
@@ -1934,7 +1934,7 @@ pub async fn replace_bundle_witnesses(
 
     (&mut *tx)
         .execute(
-            "DELETE FROM witnesses
+            "DELETE FROM voting_witnesses
          WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
             named_params! {
                 ":round_id": round_id,
@@ -1966,7 +1966,7 @@ pub async fn load_witnesses(
 ) -> Result<Vec<crate::types::WitnessData>, VotingError> {
     let witnesses = query_map(
         conn,
-            "SELECT note_position, note_commitment, root, auth_path FROM witnesses
+            "SELECT note_position, note_commitment, root, auth_path FROM voting_witnesses
              WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index ORDER BY note_position",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id, ":bundle_index": bundle_index as i64 },
         |row| {
@@ -2064,7 +2064,7 @@ pub async fn store_imt_proof(
     let path = fields_to_blob(proof.path);
 
     conn.execute(
-        "INSERT INTO imt_proofs (round_id, wallet_id, bundle_index, nullifier, root, nf_bounds, leaf_pos, path, created_at)
+        "INSERT INTO voting_imt_proofs (round_id, wallet_id, bundle_index, nullifier, root, nf_bounds, leaf_pos, path, created_at)
          VALUES (:round_id, :wallet_id, :bundle_index, :nullifier, :root, :nf_bounds, :leaf_pos, :path, strftime('%s','now'))
          ON CONFLICT(round_id, wallet_id, bundle_index, nullifier)
          DO UPDATE SET root = :root, nf_bounds = :nf_bounds, leaf_pos = :leaf_pos, path = :path, created_at = strftime('%s','now')",
@@ -2096,7 +2096,7 @@ pub async fn load_imt_proof(
 ) -> Result<Option<ImtProofData>, VotingError> {
     let row = conn
         .query_row(
-            "SELECT root, nf_bounds, leaf_pos, path FROM imt_proofs
+            "SELECT root, nf_bounds, leaf_pos, path FROM voting_imt_proofs
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND nullifier = :nullifier",
             named_params! {
@@ -2147,7 +2147,7 @@ pub async fn store_proof(
     proof_bytes: &[u8],
 ) -> Result<(), VotingError> {
     conn.execute(
-        "INSERT INTO proofs (round_id, wallet_id, bundle_index, proof, success, created_at)
+        "INSERT INTO voting_proofs (round_id, wallet_id, bundle_index, proof, success, created_at)
          VALUES (:round_id, :wallet_id, :bundle_index, :proof, 1, strftime('%s','now'))
          ON CONFLICT(round_id, wallet_id, bundle_index) DO UPDATE SET proof = :proof, success = 1",
         named_params! {
@@ -2189,7 +2189,7 @@ pub async fn store_vote(
     let result: Result<(), VotingError> = async {
         let existing_vote: Option<(i64, Option<Vec<u8>>, bool)> = conn
             .query_row(
-                "SELECT choice, commitment, tx_hash IS NOT NULL FROM votes
+                "SELECT choice, commitment, tx_hash IS NOT NULL FROM voting_votes
                  WHERE round_id = :round_id
                    AND wallet_id = :wallet_id
                    AND bundle_index = :bundle_index
@@ -2229,7 +2229,7 @@ pub async fn store_vote(
         }
 
         conn.execute(
-            "INSERT OR REPLACE INTO votes (round_id, wallet_id, bundle_index, proposal_id, choice, commitment, created_at)
+            "INSERT OR REPLACE INTO voting_votes (round_id, wallet_id, bundle_index, proposal_id, choice, commitment, created_at)
              VALUES (:round_id, :wallet_id, :bundle_index, :proposal_id, :choice, :commitment, :created_at)",
             named_params! {
                 ":round_id": round_id,
@@ -2248,7 +2248,7 @@ pub async fn store_vote(
 
         if vote_changed {
             conn.execute(
-                "DELETE FROM share_delegations
+                "DELETE FROM voting_share_delegations
                  WHERE round_id = :round_id
                    AND wallet_id = :wallet_id
                    AND bundle_index = :bundle_index
@@ -2295,7 +2295,7 @@ pub async fn clear_stale_share_delegations_for_intent(
 ) -> Result<u64, VotingError> {
     let rows = if skipped {
         conn.execute(
-            "DELETE FROM share_delegations
+            "DELETE FROM voting_share_delegations
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
                AND proposal_id = :proposal_id",
@@ -2308,12 +2308,12 @@ pub async fn clear_stale_share_delegations_for_intent(
         .await
     } else if let Some(choice) = choice {
         conn.execute(
-            "DELETE FROM share_delegations
+            "DELETE FROM voting_share_delegations
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
                AND proposal_id = :proposal_id
                AND NOT EXISTS (
-                   SELECT 1 FROM votes
+                   SELECT 1 FROM voting_votes
                    WHERE votes.round_id = share_delegations.round_id
                      AND votes.wallet_id = share_delegations.wallet_id
                      AND votes.bundle_index = share_delegations.bundle_index
@@ -2348,7 +2348,7 @@ pub async fn ensure_no_submitted_vote_conflict_for_intent(
     let conflicting_bundle = conn
         .query_row(
             "SELECT bundle_index
-             FROM votes
+             FROM voting_votes
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
                AND proposal_id = :proposal_id
@@ -2390,7 +2390,7 @@ pub async fn get_votes(
 ) -> Result<Vec<VoteRecord>, VotingError> {
     let votes = query_map(
             conn,
-            "SELECT proposal_id, bundle_index, choice FROM votes WHERE round_id = :round_id AND wallet_id = :wallet_id",
+            "SELECT proposal_id, bundle_index, choice FROM voting_votes WHERE round_id = :round_id AND wallet_id = :wallet_id",
             named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
             |row| {
                 Ok(VoteRecord {
@@ -2435,7 +2435,7 @@ pub async fn delete_bundles_from(
 
     let rows = (&mut *tx)
         .execute(
-            "DELETE FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index >= :from_index",
+            "DELETE FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index >= :from_index",
             named_params! {
                 ":round_id": round_id,
                 ":wallet_id": wallet_id,
@@ -2463,7 +2463,7 @@ pub async fn store_delegation_tx_hash(
 ) -> Result<(), VotingError> {
     let rows = conn
         .execute(
-            "UPDATE bundles SET delegation_tx_hash = :tx_hash
+            "UPDATE voting_bundles SET delegation_tx_hash = :tx_hash
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index
@@ -2513,7 +2513,7 @@ async fn existing_delegation_tx_hash(
 ) -> Result<Option<Option<String>>, VotingError> {
     conn.query_row(
         "SELECT delegation_tx_hash
-         FROM bundles
+         FROM voting_bundles
          WHERE round_id = :round_id
            AND wallet_id = :wallet_id
            AND bundle_index = :bundle_index",
@@ -2538,7 +2538,7 @@ pub async fn get_delegation_tx_hash(
     bundle_index: u32,
 ) -> Result<Option<String>, VotingError> {
     conn.query_row(
-        "SELECT delegation_tx_hash FROM bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
+        "SELECT delegation_tx_hash FROM voting_bundles WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index",
         named_params! {
             ":round_id": round_id,
             ":wallet_id": wallet_id,
@@ -2570,7 +2570,7 @@ pub async fn record_vote_submission(
     .await?;
     let rows = conn
         .execute(
-            "UPDATE votes SET tx_hash = :tx_hash
+            "UPDATE voting_votes SET tx_hash = :tx_hash
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index
@@ -2578,13 +2578,13 @@ pub async fn record_vote_submission(
                AND (tx_hash IS NULL OR tx_hash = :tx_hash)
                AND (
                    NOT EXISTS (
-                       SELECT 1 FROM ballot_intent
+                       SELECT 1 FROM voting_ballot_intent
                        WHERE round_id = :round_id
                          AND wallet_id = :wallet_id
                          AND proposal_id = :proposal_id
                    )
                    OR EXISTS (
-                       SELECT 1 FROM ballot_intent
+                       SELECT 1 FROM voting_ballot_intent
                        WHERE round_id = :round_id
                          AND wallet_id = :wallet_id
                          AND proposal_id = :proposal_id
@@ -2646,7 +2646,7 @@ async fn existing_vote_tx_hash(
     proposal_id: u32,
 ) -> Result<Option<Option<String>>, VotingError> {
     conn.query_row(
-        "SELECT tx_hash FROM votes
+        "SELECT tx_hash FROM voting_votes
          WHERE round_id = :round_id
            AND wallet_id = :wallet_id
            AND bundle_index = :bundle_index
@@ -2674,7 +2674,7 @@ pub async fn get_vote_tx_hash(
     proposal_id: u32,
 ) -> Result<Option<String>, VotingError> {
     conn.query_row(
-        "SELECT tx_hash FROM votes WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
+        "SELECT tx_hash FROM voting_votes WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
         named_params! {
             ":round_id": round_id,
             ":wallet_id": wallet_id,
@@ -2697,7 +2697,7 @@ pub async fn get_commitment_bundle(
     proposal_id: u32,
 ) -> Result<Option<(String, u64)>, VotingError> {
     let (json, pos): (Option<String>, Option<i64>) = conn.query_row(
-        "SELECT commitment_bundle_json, vc_tree_position FROM votes WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
+        "SELECT commitment_bundle_json, vc_tree_position FROM voting_votes WHERE round_id = :round_id AND wallet_id = :wallet_id AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
         named_params! {
             ":round_id": round_id,
             ":wallet_id": wallet_id,
@@ -2739,7 +2739,7 @@ pub(crate) async fn get_commitment_bundle_recovery(
     proposal_id: u32,
 ) -> Result<Option<(Option<String>, Option<i64>)>, VotingError> {
     conn.query_row(
-        "SELECT commitment_bundle_json, vc_tree_position FROM votes
+        "SELECT commitment_bundle_json, vc_tree_position FROM voting_votes
          WHERE round_id = :round_id AND wallet_id = :wallet_id
            AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
         named_params! {
@@ -2773,7 +2773,7 @@ pub async fn store_keystone_signature(
         .unwrap()
         .as_secs();
     conn.execute(
-        "INSERT OR REPLACE INTO keystone_signatures (round_id, wallet_id, bundle_index, sig, sighash, rk, created_at) VALUES (:round_id, :wallet_id, :bundle_index, :sig, :sighash, :rk, :created_at)",
+        "INSERT OR REPLACE INTO voting_keystone_signatures (round_id, wallet_id, bundle_index, sig, sighash, rk, created_at) VALUES (:round_id, :wallet_id, :bundle_index, :sig, :sighash, :rk, :created_at)",
         named_params! {
             ":round_id": round_id,
             ":wallet_id": wallet_id,
@@ -2798,7 +2798,7 @@ pub async fn get_keystone_signatures(
 ) -> Result<Vec<KeystoneSignatureRecord>, VotingError> {
     query_map(
         conn,
-            "SELECT bundle_index, sig, sighash, rk FROM keystone_signatures WHERE round_id = :round_id AND wallet_id = :wallet_id ORDER BY bundle_index",
+            "SELECT bundle_index, sig, sighash, rk FROM voting_keystone_signatures WHERE round_id = :round_id AND wallet_id = :wallet_id ORDER BY bundle_index",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
         |row| {
             Ok(KeystoneSignatureRecord {
@@ -2827,7 +2827,7 @@ pub async fn clear_unsigned_delegation_setup_fields(
     wallet_id: &str,
 ) -> Result<(), VotingError> {
     conn.execute(
-        "UPDATE bundles
+        "UPDATE voting_bundles
          SET van_comm_rand = NULL,
              dummy_nullifiers = NULL,
              rho_signed = NULL,
@@ -2852,7 +2852,7 @@ pub async fn clear_unsigned_delegation_setup_fields(
            AND van_leaf_position IS NULL
            AND bundle_index NOT IN (
                SELECT bundle_index
-               FROM keystone_signatures
+               FROM voting_keystone_signatures
                WHERE round_id = :round_id AND wallet_id = :wallet_id
            )",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
@@ -2874,7 +2874,7 @@ pub async fn clear_recovery_state(
     wallet_id: &str,
 ) -> Result<(), VotingError> {
     conn.execute(
-        "DELETE FROM share_delegations WHERE round_id = :round_id AND wallet_id = :wallet_id",
+        "DELETE FROM voting_share_delegations WHERE round_id = :round_id AND wallet_id = :wallet_id",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
     )
     .await
@@ -2882,7 +2882,7 @@ pub async fn clear_recovery_state(
         message: format!("failed to clear share delegations: {}", e),
     })?;
     conn.execute(
-        "DELETE FROM keystone_signatures WHERE round_id = :round_id AND wallet_id = :wallet_id",
+        "DELETE FROM voting_keystone_signatures WHERE round_id = :round_id AND wallet_id = :wallet_id",
         named_params! { ":round_id": round_id, ":wallet_id": wallet_id },
     )
     .await
@@ -2890,7 +2890,7 @@ pub async fn clear_recovery_state(
         message: format!("failed to clear keystone signatures: {}", e),
     })?;
     conn.execute(
-        "UPDATE bundles SET delegation_tx_hash = NULL
+        "UPDATE voting_bundles SET delegation_tx_hash = NULL
          WHERE round_id = :round_id
            AND wallet_id = :wallet_id
            AND note_positions_blob IS NOT NULL
@@ -2902,7 +2902,7 @@ pub async fn clear_recovery_state(
         message: format!("failed to clear delegation tx hashes: {}", e),
     })?;
     conn.execute(
-        "UPDATE votes SET tx_hash = NULL, commitment_bundle_json = NULL
+        "UPDATE voting_votes SET tx_hash = NULL, commitment_bundle_json = NULL
          WHERE round_id = :round_id
            AND wallet_id = :wallet_id
            AND vc_tree_position IS NULL",
@@ -2944,7 +2944,7 @@ pub(crate) async fn record_share_delegation(
         .unwrap_or_default()
         .as_secs();
     conn.execute(
-        "INSERT INTO share_delegations \
+        "INSERT INTO voting_share_delegations \
          (round_id, wallet_id, bundle_index, proposal_id, share_index, sent_to_urls, nullifier, confirmed, submit_at, created_at) \
          VALUES (:round_id, :wallet_id, :bundle_index, :proposal_id, :share_index, :sent_to_urls, :nullifier, 0, :submit_at, :created_at) \
          ON CONFLICT (round_id, wallet_id, bundle_index, proposal_id, share_index) DO UPDATE SET \
@@ -2990,7 +2990,7 @@ pub async fn get_share_delegations(
     load_share_delegations(
         conn,
         "SELECT bundle_index, proposal_id, share_index, sent_to_urls, nullifier, confirmed, submit_at, created_at, round_id \
-         FROM share_delegations WHERE round_id = :round_id AND wallet_id = :wallet_id \
+         FROM voting_share_delegations WHERE round_id = :round_id AND wallet_id = :wallet_id \
          ORDER BY proposal_id, share_index",
         round_id,
         wallet_id,
@@ -3007,7 +3007,7 @@ pub async fn get_unconfirmed_delegations(
     load_share_delegations(
         conn,
         "SELECT bundle_index, proposal_id, share_index, sent_to_urls, nullifier, confirmed, submit_at, created_at, round_id \
-         FROM share_delegations WHERE round_id = :round_id AND wallet_id = :wallet_id AND confirmed = 0 \
+         FROM voting_share_delegations WHERE round_id = :round_id AND wallet_id = :wallet_id AND confirmed = 0 \
          ORDER BY proposal_id, share_index",
         round_id,
         wallet_id,
@@ -3093,7 +3093,7 @@ pub async fn mark_share_confirmed(
         .await?;
     let updated = conn
         .execute(
-            "UPDATE share_delegations SET confirmed = 1 \
+            "UPDATE voting_share_delegations SET confirmed = 1 \
              WHERE round_id = :round_id AND wallet_id = :wallet_id \
              AND bundle_index = :bundle_index AND proposal_id = :proposal_id AND share_index = :share_index",
             named_params! {
@@ -3226,7 +3226,7 @@ async fn load_ballot_intent(
     artifact: &str,
 ) -> Result<Option<(i64, Option<i64>)>, VotingError> {
     conn.query_row(
-        "SELECT skipped, choice FROM ballot_intent
+        "SELECT skipped, choice FROM voting_ballot_intent
          WHERE round_id = :round_id
            AND wallet_id = :wallet_id
            AND proposal_id = :proposal_id",
@@ -3253,7 +3253,7 @@ async fn load_vote_choice_for_intent_check(
     artifact: &str,
 ) -> Result<Option<i64>, VotingError> {
     conn.query_row(
-        "SELECT choice FROM votes
+        "SELECT choice FROM voting_votes
          WHERE round_id = :round_id
            AND wallet_id = :wallet_id
            AND bundle_index = :bundle_index
@@ -3289,7 +3289,7 @@ pub async fn add_sent_servers(
     // Read current URLs
     let current_json: String = conn
         .query_row(
-            "SELECT sent_to_urls FROM share_delegations \
+            "SELECT sent_to_urls FROM voting_share_delegations \
              WHERE round_id = :round_id AND wallet_id = :wallet_id \
              AND bundle_index = :bundle_index AND proposal_id = :proposal_id AND share_index = :share_index",
             named_params! {
@@ -3323,7 +3323,7 @@ pub async fn add_sent_servers(
     })?;
 
     conn.execute(
-        "UPDATE share_delegations SET sent_to_urls = :urls, submit_at = 0 \
+        "UPDATE voting_share_delegations SET sent_to_urls = :urls, submit_at = 0 \
          WHERE round_id = :round_id AND wallet_id = :wallet_id \
          AND bundle_index = :bundle_index AND proposal_id = :proposal_id AND share_index = :share_index",
         named_params! {

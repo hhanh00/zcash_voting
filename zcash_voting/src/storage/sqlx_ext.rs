@@ -284,7 +284,31 @@ where
 }
 
 pub async fn execute_batch(conn: &mut SqliteConnection, sql: &str) -> Result<(), sqlx::Error> {
-    sqlx::raw_sql(sql).execute(conn).await?;
+    // Split the batch and run one statement per `sqlx::query` call. `raw_sql`
+    // binds the executor lifetime to the future's own lifetime
+    // (`E: Executor<'e>`), which cannot be re-proven under the generalized
+    // `Send` checks used by async hosts (FRB/tokio::spawn); `query`'s
+    // two-lifetime signature avoids that.
+    //
+    // The splitter strips `--` comments per line. Batches must not contain
+    // `;` or `--` inside string literals (all current call sites pass static
+    // DDL without string literals).
+    let statements: Vec<String> = sql
+        .lines()
+        .map(|line| match line.find("--") {
+            Some(pos) => &line[..pos],
+            None => line,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .split(';')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    for statement in statements {
+        sqlx::query(&statement).execute(&mut *conn).await?;
+    }
     Ok(())
 }
 

@@ -293,7 +293,7 @@ impl VotingDb {
         let row = conn
             .query_row(
                 "SELECT network, snapshot_height, created_at
-                 FROM rounds
+                 FROM voting_rounds
                  WHERE round_id = :round_id AND wallet_id = :wallet_id",
                 named_params! { ":round_id": round_id, ":wallet_id": &wallet_id },
                 |row| {
@@ -508,7 +508,7 @@ async fn round_eligible_weight(
     let total: Option<i64> = conn
         .query_row(
             "SELECT SUM((total_note_value / :ballot_divisor) * :ballot_divisor)
-             FROM bundles
+             FROM voting_bundles
              WHERE round_id = :round_id AND wallet_id = :wallet_id",
             named_params! {
                 ":round_id": round_id,
@@ -737,7 +737,7 @@ mod tests {
         let layout = db.ensure_bundles(ROUND_ID, &notes).unwrap();
         db.conn()
             .execute(
-                "UPDATE bundles
+                "UPDATE voting_bundles
                  SET total_note_value = ?1
                  WHERE round_id = ?2 AND wallet_id = ?3 AND bundle_index = 0",
                 rusqlite::params![layout.eligible_weight as i64 + 1, ROUND_ID, "wallet-c"],

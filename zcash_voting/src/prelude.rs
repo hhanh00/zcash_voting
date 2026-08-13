@@ -9,6 +9,8 @@ pub use crate::confirmation::{
     TxEventAttribute, VoteConfirmation,
 };
 pub use crate::delegate::gather_delegation_lwd_inputs;
+pub use crate::delegate::prepare_delegation_bundle_with_inputs;
+pub use crate::delegate::PrepareDelegationBundleWithInputsParams;
 pub use crate::delegate::LightwalletdBranchIdProvider;
 pub use crate::delegate::PreparedDelegationBundle;
 pub use crate::delegate::{

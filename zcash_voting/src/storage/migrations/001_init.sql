@@ -1,4 +1,8 @@
-CREATE TABLE rounds (
+-- Voting schema, namespaced with a voting_ prefix so it can live inside a
+-- host wallet's database (e.g. zkool's SQLCipher wallet DB) without colliding
+-- with the wallet's own tables. All statements are idempotent.
+
+CREATE TABLE IF NOT EXISTS voting_rounds (
     round_id            TEXT NOT NULL,
     wallet_id           TEXT NOT NULL DEFAULT '',
     network             TEXT NOT NULL CHECK (network IN ('mainnet', 'testnet', 'regtest')),
@@ -12,7 +16,7 @@ CREATE TABLE rounds (
     PRIMARY KEY (round_id, wallet_id)
 );
 
-CREATE TABLE bundles (
+CREATE TABLE IF NOT EXISTS voting_bundles (
     round_id            TEXT NOT NULL,
     wallet_id           TEXT NOT NULL DEFAULT '',
     bundle_index        INTEGER NOT NULL,
@@ -38,19 +42,19 @@ CREATE TABLE bundles (
     tx1_effects         BLOB,
     delegation_tx_hash  TEXT,
     PRIMARY KEY (round_id, wallet_id, bundle_index),
-    FOREIGN KEY (round_id, wallet_id) REFERENCES rounds(round_id, wallet_id) ON DELETE CASCADE
+    FOREIGN KEY (round_id, wallet_id) REFERENCES voting_rounds(round_id, wallet_id) ON DELETE CASCADE
 );
 
-CREATE TABLE cached_tree_state (
+CREATE TABLE IF NOT EXISTS voting_cached_tree_state (
     round_id        TEXT NOT NULL,
     wallet_id       TEXT NOT NULL DEFAULT '',
     snapshot_height INTEGER NOT NULL,
     tree_state      BLOB NOT NULL,
     PRIMARY KEY (round_id, wallet_id),
-    FOREIGN KEY (round_id, wallet_id) REFERENCES rounds(round_id, wallet_id) ON DELETE CASCADE
+    FOREIGN KEY (round_id, wallet_id) REFERENCES voting_rounds(round_id, wallet_id) ON DELETE CASCADE
 );
 
-CREATE TABLE proofs (
+CREATE TABLE IF NOT EXISTS voting_proofs (
     round_id      TEXT NOT NULL,
     wallet_id     TEXT NOT NULL DEFAULT '',
     bundle_index  INTEGER NOT NULL,
@@ -59,10 +63,10 @@ CREATE TABLE proofs (
     success       INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
     PRIMARY KEY (round_id, wallet_id, bundle_index),
-    FOREIGN KEY (round_id, wallet_id, bundle_index) REFERENCES bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
+    FOREIGN KEY (round_id, wallet_id, bundle_index) REFERENCES voting_bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
 );
 
-CREATE TABLE witnesses (
+CREATE TABLE IF NOT EXISTS voting_witnesses (
     round_id        TEXT NOT NULL,
     wallet_id       TEXT NOT NULL DEFAULT '',
     bundle_index    INTEGER NOT NULL,
@@ -72,10 +76,10 @@ CREATE TABLE witnesses (
     auth_path       BLOB NOT NULL,
     created_at      INTEGER NOT NULL,
     PRIMARY KEY (round_id, wallet_id, bundle_index, note_position),
-    FOREIGN KEY (round_id, wallet_id, bundle_index) REFERENCES bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
+    FOREIGN KEY (round_id, wallet_id, bundle_index) REFERENCES voting_bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
 );
 
-CREATE TABLE imt_proofs (
+CREATE TABLE IF NOT EXISTS voting_imt_proofs (
     round_id       TEXT NOT NULL,
     wallet_id      TEXT NOT NULL DEFAULT '',
     bundle_index   INTEGER NOT NULL,
@@ -86,10 +90,10 @@ CREATE TABLE imt_proofs (
     path           BLOB NOT NULL,
     created_at     INTEGER NOT NULL,
     PRIMARY KEY (round_id, wallet_id, bundle_index, nullifier),
-    FOREIGN KEY (round_id, wallet_id, bundle_index) REFERENCES bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
+    FOREIGN KEY (round_id, wallet_id, bundle_index) REFERENCES voting_bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
 );
 
-CREATE TABLE votes (
+CREATE TABLE IF NOT EXISTS voting_votes (
     id              INTEGER PRIMARY KEY,
     round_id        TEXT NOT NULL,
     wallet_id       TEXT NOT NULL DEFAULT '',
@@ -102,10 +106,10 @@ CREATE TABLE votes (
     vc_tree_position        INTEGER,
     commitment_bundle_json  TEXT,
     UNIQUE(round_id, wallet_id, bundle_index, proposal_id),
-    FOREIGN KEY (round_id, wallet_id, bundle_index) REFERENCES bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
+    FOREIGN KEY (round_id, wallet_id, bundle_index) REFERENCES voting_bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
 );
 
-CREATE TABLE share_delegations (
+CREATE TABLE IF NOT EXISTS voting_share_delegations (
     round_id        TEXT NOT NULL,
     wallet_id       TEXT NOT NULL DEFAULT '',
     bundle_index    INTEGER NOT NULL,
@@ -118,10 +122,10 @@ CREATE TABLE share_delegations (
     created_at      INTEGER NOT NULL,
     PRIMARY KEY (round_id, wallet_id, bundle_index, proposal_id, share_index),
     FOREIGN KEY (round_id, wallet_id, bundle_index)
-        REFERENCES bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
+        REFERENCES voting_bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
 );
 
-CREATE TABLE keystone_signatures (
+CREATE TABLE IF NOT EXISTS voting_keystone_signatures (
     round_id        TEXT NOT NULL,
     wallet_id       TEXT NOT NULL DEFAULT '',
     bundle_index    INTEGER NOT NULL,
@@ -131,10 +135,10 @@ CREATE TABLE keystone_signatures (
     created_at      INTEGER NOT NULL,
     PRIMARY KEY (round_id, wallet_id, bundle_index),
     FOREIGN KEY (round_id, wallet_id, bundle_index)
-        REFERENCES bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
+        REFERENCES voting_bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
 );
 
-CREATE TABLE ballot_intent (
+CREATE TABLE IF NOT EXISTS voting_ballot_intent (
     round_id     TEXT NOT NULL,
     wallet_id    TEXT NOT NULL DEFAULT '',
     proposal_id  INTEGER NOT NULL,
@@ -143,6 +147,6 @@ CREATE TABLE ballot_intent (
     created_at   INTEGER NOT NULL,
     updated_at   INTEGER NOT NULL,
     PRIMARY KEY (round_id, wallet_id, proposal_id),
-    FOREIGN KEY (round_id, wallet_id) REFERENCES rounds(round_id, wallet_id) ON DELETE CASCADE,
+    FOREIGN KEY (round_id, wallet_id) REFERENCES voting_rounds(round_id, wallet_id) ON DELETE CASCADE,
     CHECK ((skipped = 1 AND choice IS NULL) OR (skipped = 0 AND choice IS NOT NULL))
 );
