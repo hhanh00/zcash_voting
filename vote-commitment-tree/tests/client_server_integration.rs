@@ -29,8 +29,8 @@ fn fp(x: u64) -> Fp {
 ///  4. Simulate MsgCastVote: server.append_two(new_van_alice, vc_alice), server.checkpoint(2)
 ///  5. Client syncs block 2, generates witness at height 2
 ///  6. All witnesses verify against the server's roots
-#[test]
-fn server_append_client_sync_witness_roundtrip() {
+#[tokio::test]
+async fn server_append_client_sync_witness_roundtrip() {
     // ---------------------------------------------------------------
     // 1. Create TreeServer (empty)
     // ---------------------------------------------------------------
@@ -52,7 +52,7 @@ fn server_append_client_sync_witness_roundtrip() {
     //    Root consistency is now verified inside sync().
     // ---------------------------------------------------------------
     client.mark_position(van_idx);
-    client.sync(&server).unwrap();
+    client.sync(&server).await.unwrap();
 
     assert_eq!(client.size(), 1, "client should have 1 leaf after sync");
     assert_eq!(
@@ -104,7 +104,7 @@ fn server_append_client_sync_witness_roundtrip() {
     // ---------------------------------------------------------------
     client.mark_position(cast_idx); // new VAN at position 1
     client.mark_position(cast_idx + 1); // VC at position 2
-    client.sync(&server).unwrap();
+    client.sync(&server).await.unwrap();
 
     assert_eq!(
         client.size(),
@@ -171,8 +171,8 @@ fn server_append_client_sync_witness_roundtrip() {
 
 /// Test that the original VAN witness (position 0) still verifies at its
 /// original anchor (height 1) even after the tree has grown.
-#[test]
-fn historical_witness_survives_growth() {
+#[tokio::test]
+async fn historical_witness_survives_growth() {
     let mut server = MemoryTreeServer::empty();
 
     // Block 1: one VAN.
@@ -191,7 +191,7 @@ fn historical_witness_survives_growth() {
     // Client syncs the full history. Mark position 0 before sync.
     let mut client = TreeClient::empty();
     client.mark_position(0);
-    client.sync(&server).unwrap();
+    client.sync(&server).await.unwrap();
     assert_eq!(client.size(), 4);
 
     // Witness at height 1 (before growth) still verifies.
@@ -206,8 +206,8 @@ fn historical_witness_survives_growth() {
 
 /// Test the TreeSyncApi contract directly: get_tree_state, get_block_commitments,
 /// and get_root_at_height return consistent data.
-#[test]
-fn sync_api_consistency() {
+#[tokio::test]
+async fn sync_api_consistency() {
     let mut server = MemoryTreeServer::empty();
 
     // Append across multiple blocks.
@@ -219,13 +219,13 @@ fn sync_api_consistency() {
     }
 
     // get_tree_state reflects the tip.
-    let state = server.get_tree_state().unwrap();
+    let state = server.get_tree_state().await.unwrap();
     assert_eq!(state.height, 5);
     assert_eq!(state.next_index, 1 + 2 + 3 + 4 + 5); // 15 total leaves
     assert_eq!(state.root, server.root());
 
     // get_block_commitments for a subrange.
-    let page = server.get_block_commitments(2, 4).unwrap();
+    let page = server.get_block_commitments(2, 4).await.unwrap();
     let blocks = page.blocks;
     assert_eq!(page.next_from_height, 0);
     assert_eq!(blocks.len(), 3);
@@ -241,15 +241,15 @@ fn sync_api_consistency() {
 
     // get_root_at_height for each block matches server.root_at_height.
     for height in 1..=5u32 {
-        let api_root = server.get_root_at_height(height).unwrap();
+        let api_root = server.get_root_at_height(height).await.unwrap();
         let direct_root = server.root_at_height(height);
         assert_eq!(api_root, direct_root);
     }
 }
 
 /// Test that a fresh client can sync all blocks at once (full sync).
-#[test]
-fn full_sync_from_genesis() {
+#[tokio::test]
+async fn full_sync_from_genesis() {
     let mut server = MemoryTreeServer::empty();
 
     // 10 blocks, 2 leaves each.
@@ -265,7 +265,7 @@ fn full_sync_from_genesis() {
     for &pos in &witness_positions {
         client.mark_position(pos);
     }
-    client.sync(&server).unwrap();
+    client.sync(&server).await.unwrap();
 
     assert_eq!(client.size(), 20);
     assert_eq!(client.last_synced_height(), Some(10));
@@ -302,8 +302,8 @@ fn full_sync_from_genesis() {
 ///
 /// This validates the sparse-witness property: a client that marks only its
 /// own VAN cannot generate witnesses for other participants' leaves.
-#[test]
-fn unmarked_position_returns_none() {
+#[tokio::test]
+async fn unmarked_position_returns_none() {
     let mut server = MemoryTreeServer::empty();
     server.append(fp(10)).unwrap(); // position 0
     server.append(fp(20)).unwrap(); // position 1
@@ -313,7 +313,7 @@ fn unmarked_position_returns_none() {
     // Client marks only position 1 (its own VAN).
     let mut client = TreeClient::empty();
     client.mark_position(1);
-    client.sync(&server).unwrap();
+    client.sync(&server).await.unwrap();
     assert_eq!(client.size(), 3);
 
     // Roots are correct regardless of marking (roots are computed from all leaves).
@@ -341,24 +341,24 @@ fn unmarked_position_returns_none() {
 }
 
 /// Test idempotent sync — calling sync when already up-to-date is a no-op.
-#[test]
-fn sync_idempotent_when_up_to_date() {
+#[tokio::test]
+async fn sync_idempotent_when_up_to_date() {
     let mut server = MemoryTreeServer::empty();
     server.append(fp(1)).unwrap();
     server.checkpoint(1).unwrap();
 
     let mut client = TreeClient::empty();
-    client.sync(&server).unwrap();
+    client.sync(&server).await.unwrap();
     assert_eq!(client.size(), 1);
 
     // Sync again with no new data.
-    client.sync(&server).unwrap();
+    client.sync(&server).await.unwrap();
     assert_eq!(client.size(), 1);
     assert_eq!(client.last_synced_height(), Some(1));
 }
 
-#[test]
-fn sync_rejects_final_page_before_advertised_tip() {
+#[tokio::test]
+async fn sync_rejects_final_page_before_advertised_tip() {
     struct TruncatedApi {
         state: TreeState,
     }
@@ -366,7 +366,7 @@ fn sync_rejects_final_page_before_advertised_tip() {
     impl TreeSyncApi for TruncatedApi {
         type Error = Infallible;
 
-        fn get_block_commitments(
+        async fn get_block_commitments(
             &self,
             _from_height: u32,
             _to_height: u32,
@@ -377,11 +377,11 @@ fn sync_rejects_final_page_before_advertised_tip() {
             })
         }
 
-        fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
+        async fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
             Ok(None)
         }
 
-        fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
+        async fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
             Ok(self.state.clone())
         }
     }
@@ -392,8 +392,9 @@ fn sync_rejects_final_page_before_advertised_tip() {
 
     let err = TreeClient::empty()
         .sync(&TruncatedApi {
-            state: server.get_tree_state().unwrap(),
+            state: server.get_tree_state().await.unwrap(),
         })
+        .await
         .unwrap_err();
 
     assert!(matches!(
@@ -405,8 +406,8 @@ fn sync_rejects_final_page_before_advertised_tip() {
     ));
 }
 
-#[test]
-fn sync_rejects_invalid_pagination_cursors() {
+#[tokio::test]
+async fn sync_rejects_invalid_pagination_cursors() {
     use std::collections::BTreeMap;
 
     struct CursorApi {
@@ -417,7 +418,7 @@ fn sync_rejects_invalid_pagination_cursors() {
     impl TreeSyncApi for CursorApi {
         type Error = Infallible;
 
-        fn get_block_commitments(
+        async fn get_block_commitments(
             &self,
             from_height: u32,
             _to_height: u32,
@@ -431,11 +432,11 @@ fn sync_rejects_invalid_pagination_cursors() {
             })
         }
 
-        fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
+        async fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
             Ok(None)
         }
 
-        fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
+        async fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
             Ok(self.state.clone())
         }
     }
@@ -451,6 +452,7 @@ fn sync_rejects_invalid_pagination_cursors() {
             state: state.clone(),
             cursors: BTreeMap::from([(0, 1), (1, 1)]),
         })
+        .await
         .unwrap_err();
     assert!(matches!(
         err,
@@ -465,6 +467,7 @@ fn sync_rejects_invalid_pagination_cursors() {
             state,
             cursors: BTreeMap::from([(0, 6)]),
         })
+        .await
         .unwrap_err();
     assert!(matches!(
         err,
@@ -475,14 +478,14 @@ fn sync_rejects_invalid_pagination_cursors() {
     ));
 }
 
-#[test]
-fn sync_rejects_too_many_pages() {
+#[tokio::test]
+async fn sync_rejects_too_many_pages() {
     struct AdvancingApi;
 
     impl TreeSyncApi for AdvancingApi {
         type Error = Infallible;
 
-        fn get_block_commitments(
+        async fn get_block_commitments(
             &self,
             from_height: u32,
             _to_height: u32,
@@ -493,11 +496,11 @@ fn sync_rejects_too_many_pages() {
             })
         }
 
-        fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
+        async fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
             Ok(None)
         }
 
-        fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
+        async fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
             Ok(TreeState {
                 next_index: 1,
                 root: fp(1),
@@ -514,19 +517,20 @@ fn sync_rejects_too_many_pages() {
                 max_duration: std::time::Duration::from_secs(60),
             },
         )
+        .await
         .unwrap_err();
 
     assert!(matches!(err, SyncError::PageLimitExceeded { max_pages: 2 }));
 }
 
-#[test]
-fn sync_rejects_expired_time_budget() {
+#[tokio::test]
+async fn sync_rejects_expired_time_budget() {
     struct NonEmptyApi;
 
     impl TreeSyncApi for NonEmptyApi {
         type Error = Infallible;
 
-        fn get_block_commitments(
+        async fn get_block_commitments(
             &self,
             _from_height: u32,
             _to_height: u32,
@@ -534,11 +538,11 @@ fn sync_rejects_expired_time_budget() {
             panic!("expired sync should stop after fetching state");
         }
 
-        fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
+        async fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
             Ok(None)
         }
 
-        fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
+        async fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
             std::thread::sleep(std::time::Duration::from_millis(1));
             Ok(TreeState {
                 next_index: 1,
@@ -556,13 +560,14 @@ fn sync_rejects_expired_time_budget() {
                 max_duration: std::time::Duration::ZERO,
             },
         )
+        .await
         .unwrap_err();
 
     assert!(matches!(err, SyncError::TimeLimitExceeded { .. }));
 }
 
-#[test]
-fn sync_rejects_fast_path_root_mismatch() {
+#[tokio::test]
+async fn sync_rejects_fast_path_root_mismatch() {
     struct WrongRootApi {
         state: TreeState,
     }
@@ -570,7 +575,7 @@ fn sync_rejects_fast_path_root_mismatch() {
     impl TreeSyncApi for WrongRootApi {
         type Error = Infallible;
 
-        fn get_block_commitments(
+        async fn get_block_commitments(
             &self,
             _from_height: u32,
             _to_height: u32,
@@ -578,11 +583,11 @@ fn sync_rejects_fast_path_root_mismatch() {
             panic!("fast path should not request commitment leaves");
         }
 
-        fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
+        async fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
             panic!("fast path should not request roots by height");
         }
 
-        fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
+        async fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
             Ok(self.state.clone())
         }
     }
@@ -592,9 +597,9 @@ fn sync_rejects_fast_path_root_mismatch() {
     server.checkpoint(1).unwrap();
 
     let mut client = TreeClient::empty();
-    client.sync(&server).unwrap();
+    client.sync(&server).await.unwrap();
 
-    let server_state = server.get_tree_state().unwrap();
+    let server_state = server.get_tree_state().await.unwrap();
     let bad_root = if server_state.root == fp(999) {
         fp(998)
     } else {
@@ -608,6 +613,7 @@ fn sync_rejects_fast_path_root_mismatch() {
                 ..server_state
             },
         })
+        .await
         .unwrap_err();
 
     assert!(matches!(
@@ -621,8 +627,8 @@ fn sync_rejects_fast_path_root_mismatch() {
 }
 
 /// Test that server and client produce byte-identical auth paths.
-#[test]
-fn server_and_client_paths_are_identical() {
+#[tokio::test]
+async fn server_and_client_paths_are_identical() {
     let mut server = MemoryTreeServer::empty();
     server.append(fp(42)).unwrap();
     server.append(fp(43)).unwrap();
@@ -630,7 +636,7 @@ fn server_and_client_paths_are_identical() {
 
     let mut client = TreeClient::empty();
     client.mark_position(0);
-    client.sync(&server).unwrap();
+    client.sync(&server).await.unwrap();
 
     let server_path = server.path(0, 1).unwrap();
     let client_path = client.witness(0, 1).unwrap();
@@ -646,8 +652,8 @@ fn server_and_client_paths_are_identical() {
 /// - Helper server needs a VC witness for ZKP #3 at anchor height 3
 /// - They sync independently, at different times, to different heights
 /// - Both produce correct witnesses without interfering with each other
-#[test]
-fn two_clients_wallet_and_helper_server() {
+#[tokio::test]
+async fn two_clients_wallet_and_helper_server() {
     let mut server = MemoryTreeServer::empty();
 
     // -- Block 1: Alice delegates (MsgDelegateVote) -----------------------
@@ -683,7 +689,7 @@ fn two_clients_wallet_and_helper_server() {
     let mut wallet = TreeClient::empty();
     wallet.mark_position(0); // Alice's original VAN
     wallet.mark_position(2); // Alice's new VAN (for potential second vote)
-    wallet.sync(&server).unwrap();
+    wallet.sync(&server).await.unwrap();
     assert_eq!(wallet.size(), 6);
 
     let van_witness = wallet
@@ -703,7 +709,7 @@ fn two_clients_wallet_and_helper_server() {
     let mut helper = TreeClient::empty();
     helper.mark_position(3); // Alice's VC (from delegated_voting_share_payload)
     helper.mark_position(5); // Bob's VC (from delegated_voting_share_payload)
-    helper.sync(&server).unwrap();
+    helper.sync(&server).await.unwrap();
     assert_eq!(helper.size(), 6);
 
     let vc_witness = helper
@@ -753,8 +759,8 @@ fn two_clients_wallet_and_helper_server() {
 /// positions in shard 0 (pos 0), shard 1 (pos 16), and shard 2 (pos 32).
 /// Witnesses that span shard boundaries require the tree to combine data
 /// from adjacent shards — this is where subtle bugs tend to hide.
-#[test]
-fn shard_boundary_crossing() {
+#[tokio::test]
+async fn shard_boundary_crossing() {
     let mut server = MemoryTreeServer::empty();
 
     // Append 40 leaves across 10 blocks (4 leaves per block).
@@ -774,7 +780,7 @@ fn shard_boundary_crossing() {
     for &pos in &[0u64, 15, 16, 31, 32, 39] {
         client.mark_position(pos);
     }
-    client.sync(&server).unwrap();
+    client.sync(&server).await.unwrap();
     assert_eq!(client.size(), 40);
     assert_eq!(client.last_synced_height(), Some(10));
 
@@ -844,8 +850,8 @@ fn shard_boundary_crossing() {
 }
 
 /// Test MerklePath serialization roundtrip.
-#[test]
-fn merkle_path_serialization_roundtrip() {
+#[tokio::test]
+async fn merkle_path_serialization_roundtrip() {
     let mut server = MemoryTreeServer::empty();
     server.append(fp(10)).unwrap();
     server.append(fp(20)).unwrap();
@@ -889,8 +895,8 @@ fn merkle_path_serialization_roundtrip() {
 /// wallet knows its VAN index before syncing the block that contains it.
 ///
 /// Deterministic via seeded RNG for reproducibility.
-#[test]
-fn stress_persistent_vs_flaky_client() {
+#[tokio::test]
+async fn stress_persistent_vs_flaky_client() {
     let mut rng = StdRng::seed_from_u64(0x2A11_0000_0001);
 
     let mut server = MemoryTreeServer::empty();
@@ -948,7 +954,7 @@ fn stress_persistent_vs_flaky_client() {
         }
 
         // -- Persistent client: incremental sync --
-        persistent.sync(&server).unwrap();
+        persistent.sync(&server).await.unwrap();
 
         assert_eq!(
             persistent.size(),
@@ -965,7 +971,7 @@ fn stress_persistent_vs_flaky_client() {
         }
 
         // Sync (either incremental from last position, or full from genesis).
-        flaky.sync(&server).unwrap();
+        flaky.sync(&server).await.unwrap();
 
         assert_eq!(
             flaky.size(),
@@ -1069,7 +1075,7 @@ fn stress_persistent_vs_flaky_client() {
     // -- One more flaky reset + full resync to prove it still works --
     flaky = TreeClient::empty();
     register_marks(&mut flaky, &witness_positions, final_check_pos);
-    flaky.sync(&server).unwrap();
+    flaky.sync(&server).await.unwrap();
     assert_eq!(flaky.size(), total_leaves);
     assert_eq!(flaky.root(), persistent.root());
 

@@ -5,7 +5,8 @@
 //! (witnesses) for Vote Authority Notes (VANs) needed by ZKP #2.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 use vote_commitment_tree::{MerklePath, TreeClient, TreeSyncApi};
 use vote_commitment_tree_client::http_sync_api::HttpTreeSyncApi;
@@ -36,7 +37,6 @@ mod tests {
     use super::*;
     use ff::PrimeField;
     use pasta_curves::Fp;
-    use std::sync::mpsc;
     use std::time::Duration;
     use vote_commitment_tree::MemoryTreeServer;
 
@@ -47,8 +47,8 @@ mod tests {
         "0202020202020202020202020202020202020202020202020202020202020202";
     const WALLET_ID: &str = "wallet-tree-sync";
 
-    #[test]
-    fn sync_rebuilds_when_recovery_marks_already_synced_position() {
+    #[tokio::test]
+    async fn sync_rebuilds_when_recovery_marks_already_synced_position() {
         let db = VotingDb::open_in_memory().unwrap();
         db.set_wallet_id(WALLET_ID);
         db.create_round(crate::Network::Testnet, &round_params(), None)
@@ -74,7 +74,7 @@ mod tests {
         let sync = VoteTreeSync::new();
         let server = server_with_single_leaf_blocks(7);
 
-        let height = sync.sync_with_api(&db, ROUND_ID, &server).unwrap();
+        let height = sync.sync_with_api(&db, ROUND_ID, &server).await.unwrap();
         assert_eq!(height, 7);
 
         // A resumed wallet may confirm earlier cast-vote transactions after a
@@ -106,16 +106,16 @@ mod tests {
         db.store_van_position(ROUND_ID, 0, 2).unwrap();
         db.store_van_position(ROUND_ID, 1, 4).unwrap();
 
-        let height = sync.sync_with_api(&db, ROUND_ID, &server).unwrap();
-        let witness = sync.generate_van_witness(&db, ROUND_ID, 1, height).unwrap();
+        let height = sync.sync_with_api(&db, ROUND_ID, &server).await.unwrap();
+        let witness = sync.generate_van_witness(&db, ROUND_ID, 1, height).await.unwrap();
 
         assert_eq!(height, 7);
         assert_eq!(witness.position, 4);
         assert_eq!(witness.anchor_height, 7);
     }
 
-    #[test]
-    fn recovery_clear_preserves_recorded_vote_tree_state() {
+    #[tokio::test]
+    async fn recovery_clear_preserves_recorded_vote_tree_state() {
         let db = VotingDb::open_in_memory().unwrap();
         db.set_wallet_id(WALLET_ID);
         db.create_round(crate::Network::Testnet, &round_params(), None)
@@ -151,13 +151,14 @@ mod tests {
         let sync = VoteTreeSync::new();
         let height = sync
             .sync_with_api(&db, ROUND_ID, &server_with_single_leaf_blocks(2))
+            .await
             .unwrap();
-        let witness = sync.generate_van_witness(&db, ROUND_ID, 0, height).unwrap();
+        let witness = sync.generate_van_witness(&db, ROUND_ID, 0, height).await.unwrap();
         assert_eq!(witness.position, 1);
     }
 
-    #[test]
-    fn sync_rejects_a_confirmed_position_for_a_different_van() {
+    #[tokio::test]
+    async fn sync_rejects_a_confirmed_position_for_a_different_van() {
         let db = VotingDb::open_in_memory().unwrap();
         db.set_wallet_id(WALLET_ID);
         db.create_round(crate::Network::Testnet, &round_params(), None)
@@ -175,6 +176,7 @@ mod tests {
         let sync = VoteTreeSync::new();
         let error = sync
             .sync_with_api(&db, ROUND_ID, &server_with_single_leaf_blocks(1))
+            .await
             .expect_err("a different public leaf must not authorize voting");
         assert!(
             error
@@ -184,6 +186,7 @@ mod tests {
         );
         let witness_error = sync
             .generate_van_witness(&db, ROUND_ID, 0, 1)
+            .await
             .expect_err("unverified tree state must not produce a witness");
         assert!(
             witness_error
@@ -193,8 +196,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sync_retains_incremental_state_when_confirmed_position_is_not_yet_synced() {
+    #[tokio::test]
+    async fn sync_retains_incremental_state_when_confirmed_position_is_not_yet_synced() {
         let db = VotingDb::open_in_memory().unwrap();
         db.set_wallet_id(WALLET_ID);
         db.create_round(crate::Network::Testnet, &round_params(), None)
@@ -213,6 +216,7 @@ mod tests {
         let mut server = server_with_single_leaf_blocks(1);
         let error = sync
             .sync_with_api(&db, ROUND_ID, &server)
+            .await
             .expect_err("a position beyond the synced tree must remain pending");
         assert!(
             error
@@ -223,27 +227,27 @@ mod tests {
 
         let round_client = sync.clients.lock().unwrap().get(ROUND_ID).cloned().unwrap();
         assert_eq!(round_client.lock().unwrap().client.size(), 1);
-        assert!(sync.generate_van_witness(&db, ROUND_ID, 0, 1).is_err());
+        assert!(sync.generate_van_witness(&db, ROUND_ID, 0, 1).await.is_err());
 
         server.append(Fp::from(2)).unwrap();
         server.checkpoint(2).unwrap();
-        let height = sync.sync_with_api(&db, ROUND_ID, &server).unwrap();
-        let witness = sync.generate_van_witness(&db, ROUND_ID, 0, height).unwrap();
+        let height = sync.sync_with_api(&db, ROUND_ID, &server).await.unwrap();
+        let witness = sync.generate_van_witness(&db, ROUND_ID, 0, height).await.unwrap();
         assert_eq!(height, 2);
         assert_eq!(witness.position, 1);
     }
 
-    #[test]
-    fn blocked_sync_does_not_block_another_round() {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn blocked_sync_does_not_block_another_round() {
         struct BlockingApi {
-            entered: mpsc::Sender<()>,
-            release: mpsc::Receiver<()>,
+            entered: tokio::sync::oneshot::Sender<()>,
+            release: tokio::sync::oneshot::Receiver<()>,
         }
 
         impl TreeSyncApi for BlockingApi {
             type Error = std::convert::Infallible;
 
-            fn get_block_commitments(
+            async fn get_block_commitments(
                 &self,
                 _from_height: u32,
                 _to_height: u32,
@@ -252,15 +256,15 @@ mod tests {
                 unreachable!("empty tree does not fetch commitment pages")
             }
 
-            fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
+            async fn get_root_at_height(&self, _height: u32) -> Result<Option<Fp>, Self::Error> {
                 Ok(None)
             }
 
-            fn get_tree_state(
+            async fn get_tree_state(
                 &self,
             ) -> Result<vote_commitment_tree::sync_api::TreeState, Self::Error> {
                 self.entered.send(()).unwrap();
-                self.release.recv().unwrap();
+                self.release.await.unwrap();
                 Ok(vote_commitment_tree::sync_api::TreeState {
                     next_index: 0,
                     root: Fp::zero(),
@@ -270,11 +274,11 @@ mod tests {
         }
 
         let sync = Arc::new(VoteTreeSync::new());
-        let (entered_tx, entered_rx) = mpsc::channel();
-        let (release_tx, release_rx) = mpsc::channel();
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
 
         let first_sync = sync.clone();
-        let first = std::thread::spawn(move || {
+        let first = tokio::spawn(async move {
             let db = db_for_round(ROUND_ID);
             first_sync
                 .sync_with_api(
@@ -285,25 +289,30 @@ mod tests {
                         release: release_rx,
                     },
                 )
+                .await
                 .unwrap()
         });
-        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), entered_rx)
+            .await
+            .expect("first sync must enter the blocking API call")
+            .expect("blocking API channel dropped");
 
         let second_sync = sync.clone();
-        let (second_done_tx, second_done_rx) = mpsc::channel();
-        let second = std::thread::spawn(move || {
+        let second = tokio::spawn(async move {
             let db = db_for_round(SECOND_ROUND_ID);
-            let result =
-                second_sync.sync_with_api(&db, SECOND_ROUND_ID, &MemoryTreeServer::empty());
-            second_done_tx.send(result).unwrap();
+            second_sync
+                .sync_with_api(&db, SECOND_ROUND_ID, &MemoryTreeServer::empty())
+                .await
         });
 
-        let second_result = second_done_rx.recv_timeout(Duration::from_secs(2));
+        let second_result = tokio::time::timeout(Duration::from_secs(2), second)
+            .await
+            .expect("second round sync must complete while the first is blocked")
+            .expect("second sync task must not panic");
         release_tx.send(()).unwrap();
-        first.join().unwrap();
-        second.join().unwrap();
+        first.await.unwrap();
 
-        assert_eq!(second_result.unwrap().unwrap(), 0);
+        assert_eq!(second_result.unwrap(), 0);
     }
 
     fn db_for_round(round_id: &str) -> VotingDb {
@@ -442,17 +451,13 @@ impl VoteTreeSync {
             .collect::<BTreeSet<_>>();
 
         let round_client = {
-            let mut clients = self.clients.lock().map_err(|e| VotingError::Internal {
-                message: format!("tree client registry lock poisoned: {e}"),
-            })?;
+            let mut clients = self.clients.lock().await;
             clients
                 .entry(round_id.to_string())
                 .or_insert_with(|| Arc::new(Mutex::new(RoundTreeClient::empty())))
                 .clone()
         };
-        let mut round_client = round_client.lock().map_err(|e| VotingError::Internal {
-            message: format!("round tree client lock poisoned: {e}"),
-        })?;
+        let mut round_client = round_client.lock().await;
 
         if round_client.needs_resync_for(&positions) {
             *round_client = RoundTreeClient::empty();
@@ -462,6 +467,7 @@ impl VoteTreeSync {
         round_client
             .client
             .sync(api)
+            .await
             .map_err(|e| VotingError::Internal {
                 message: format!("vote tree sync failed: {}", e),
             })?;
@@ -534,9 +540,7 @@ impl VoteTreeSync {
         let van_position = db.load_van_position(round_id, bundle_index).await?;
 
         let round_client = {
-            let clients = self.clients.lock().map_err(|e| VotingError::Internal {
-                message: format!("tree client registry lock poisoned: {e}"),
-            })?;
+            let clients = self.clients.lock().await;
             clients
                 .get(round_id)
                 .cloned()
@@ -544,9 +548,7 @@ impl VoteTreeSync {
                     message: "must call sync before generate_van_witness".to_string(),
                 })?
         };
-        let round_client = round_client.lock().map_err(|e| VotingError::Internal {
-            message: format!("round tree client lock poisoned: {e}"),
-        })?;
+        let round_client = round_client.lock().await;
 
         let path = round_client
             .client
@@ -565,10 +567,8 @@ impl VoteTreeSync {
     /// creates a fresh one and does a full resync. This recovers from stale
     /// state that would otherwise cause `StartIndexMismatch` or `RootMismatch`.
     /// If `round_id` is empty, all clients are dropped.
-    pub fn reset(&self, round_id: &str) -> Result<(), VotingError> {
-        let mut guard = self.clients.lock().map_err(|e| VotingError::Internal {
-            message: format!("tree client registry lock poisoned: {e}"),
-        })?;
+    pub async fn reset(&self, round_id: &str) -> Result<(), VotingError> {
+        let mut guard = self.clients.lock().await;
         if round_id.is_empty() {
             guard.clear();
         } else {

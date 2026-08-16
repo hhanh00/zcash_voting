@@ -63,7 +63,7 @@ pub trait TreeSyncApi {
     ///
     /// Returns blocks in ascending height order. Empty blocks (no appends) may
     /// be omitted from the result.
-    fn get_block_commitments(
+    async fn get_block_commitments(
         &self,
         from_height: u32,
         to_height: u32,
@@ -72,10 +72,10 @@ pub trait TreeSyncApi {
     /// Fetch tree root at a checkpoint height (anchor verification).
     ///
     /// Maps to: `GET /zally/v1/commitment-tree/{height}`
-    fn get_root_at_height(&self, height: u32) -> Result<Option<Fp>, Self::Error>;
+    async fn get_root_at_height(&self, height: u32) -> Result<Option<Fp>, Self::Error>;
 
     /// Fetch current tree state (next_index, root, latest height).
     ///
     /// Maps to: `GET /zally/v1/commitment-tree/latest`
-    fn get_tree_state(&self) -> Result<TreeState, Self::Error>;
+    async fn get_tree_state(&self) -> Result<TreeState, Self::Error>;
 }

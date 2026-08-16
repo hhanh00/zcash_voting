@@ -22,7 +22,9 @@ use pasta_curves::Fp;
 
 use vote_commitment_tree::{MerklePath, TreeClient, TreeSyncApi};
 use vote_commitment_tree_client::http_sync_api::HttpTreeSyncApi;
-use vote_commitment_tree_client::transport::{Transport, TransportError, TransportResponse};
+use vote_commitment_tree_client::transport::{
+    Transport, TransportError, TransportFuture, TransportResponse,
+};
 
 // ---------------------------------------------------------------------------
 // CLI definition
@@ -135,16 +137,11 @@ type RequestBody = Empty<Bytes>;
 type HyperClient = Client<HttpsConnector<HttpConnector>, RequestBody>;
 
 struct CliHyperTransport {
-    runtime: tokio::runtime::Runtime,
     client: HyperClient,
 }
 
 impl CliHyperTransport {
     fn new() -> Result<Self, TransportError> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| TransportError::Request(e.to_string()))?;
         let mut connector = HttpConnector::new();
         connector.enforce_http(false);
         let https = hyper_rustls::HttpsConnectorBuilder::new()
@@ -155,13 +152,13 @@ impl CliHyperTransport {
             .wrap_connector(connector);
         let client = Client::builder(TokioExecutor::new()).build(https);
 
-        Ok(Self { runtime, client })
+        Ok(Self { client })
     }
 }
 
 impl Transport for CliHyperTransport {
-    fn get(&self, url: &str) -> Result<TransportResponse, TransportError> {
-        self.runtime.block_on(async {
+    fn get<'a>(&'a self, url: &'a str) -> TransportFuture<'a> {
+        Box::pin(async move {
             let request = Request::builder()
                 .method("GET")
                 .uri(url)
@@ -198,11 +195,11 @@ fn http_api(node: &str, round: &str) -> HttpTreeSyncApi {
 // Commands
 // ---------------------------------------------------------------------------
 
-fn cmd_sync(node: &str, round: &str, mark_positions: &[u64]) {
+async fn cmd_sync(node: &str, round: &str, mark_positions: &[u64]) {
     let api = http_api(node, round);
 
     // Fetch remote state first for display.
-    let remote_state = api.get_tree_state().unwrap_or_else(|e| {
+    let remote_state = api.get_tree_state().await.unwrap_or_else(|e| {
         eprintln!("error: failed to fetch tree state: {}", e);
         process::exit(1);
     });
@@ -224,7 +221,7 @@ fn cmd_sync(node: &str, round: &str, mark_positions: &[u64]) {
     }
 
     println!("Syncing from genesis to height {}...", remote_state.height);
-    client.sync(&api).unwrap_or_else(|e| {
+    client.sync(&api).await.unwrap_or_else(|e| {
         eprintln!("error: sync failed: {}", e);
         process::exit(1);
     });
@@ -242,10 +239,10 @@ fn cmd_sync(node: &str, round: &str, mark_positions: &[u64]) {
     }
 }
 
-fn cmd_witness(node: &str, round: &str, position: u64, anchor_height: Option<u32>) {
+async fn cmd_witness(node: &str, round: &str, position: u64, anchor_height: Option<u32>) {
     let api = http_api(node, round);
 
-    let remote_state = api.get_tree_state().unwrap_or_else(|e| {
+    let remote_state = api.get_tree_state().await.unwrap_or_else(|e| {
         eprintln!("error: failed to fetch tree state: {}", e);
         process::exit(1);
     });
@@ -259,7 +256,7 @@ fn cmd_witness(node: &str, round: &str, position: u64, anchor_height: Option<u32
     client.mark_position(position);
 
     println!("Syncing to height {}...", remote_state.height);
-    client.sync(&api).unwrap_or_else(|e| {
+    client.sync(&api).await.unwrap_or_else(|e| {
         eprintln!("error: sync failed: {}", e);
         process::exit(1);
     });
@@ -323,10 +320,10 @@ fn cmd_verify(leaf_hex: &str, witness_hex: &str, root_hex: &str) {
     }
 }
 
-fn cmd_status(node: &str, round: &str) {
+async fn cmd_status(node: &str, round: &str) {
     let api = http_api(node, round);
 
-    let state = api.get_tree_state().unwrap_or_else(|e| {
+    let state = api.get_tree_state().await.unwrap_or_else(|e| {
         eprintln!("error: failed to fetch tree state: {}", e);
         process::exit(1);
     });
@@ -350,19 +347,25 @@ fn cmd_status(node: &str, round: &str) {
 fn main() {
     let cli = Cli::parse();
 
-    match &cli.command {
-        Command::Sync { node, round, mark } => cmd_sync(node, round, mark),
-        Command::Witness {
-            node,
-            round,
-            position,
-            anchor_height,
-        } => cmd_witness(node, round, *position, *anchor_height),
-        Command::Verify {
-            leaf,
-            witness,
-            root,
-        } => cmd_verify(leaf, witness, root),
-        Command::Status { node, round } => cmd_status(node, round),
-    }
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("create tokio runtime");
+    runtime.block_on(async {
+        match &cli.command {
+            Command::Sync { node, round, mark } => cmd_sync(node, round, mark).await,
+            Command::Witness {
+                node,
+                round,
+                position,
+                anchor_height,
+            } => cmd_witness(node, round, *position, *anchor_height).await,
+            Command::Verify {
+                leaf,
+                witness,
+                root,
+            } => cmd_verify(leaf, witness, root),
+            Command::Status { node, round } => cmd_status(node, round).await,
+        }
+    });
 }

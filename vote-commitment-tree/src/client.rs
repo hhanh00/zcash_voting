@@ -206,8 +206,8 @@ impl TreeClient {
     ///   server's root at that height (the consistency check described in the README).
     /// - After pagination completes, the client must match the tip advertised by
     ///   `get_tree_state()`.
-    pub fn sync<A: TreeSyncApi>(&mut self, api: &A) -> Result<(), SyncError<A::Error>> {
-        self.sync_with_limits(api, SyncLimits::default())
+    pub async fn sync<A: TreeSyncApi>(&mut self, api: &A) -> Result<(), SyncError<A::Error>> {
+        self.sync_with_limits(api, SyncLimits::default()).await
     }
 
     /// Sync with explicit resource limits.
@@ -215,13 +215,13 @@ impl TreeClient {
     /// API implementations should also bound each individual request. The
     /// duration here bounds a sequence of otherwise valid pages and is checked
     /// between calls; it cannot interrupt an API implementation that blocks.
-    pub fn sync_with_limits<A: TreeSyncApi>(
+    pub async fn sync_with_limits<A: TreeSyncApi>(
         &mut self,
         api: &A,
         limits: SyncLimits,
     ) -> Result<(), SyncError<A::Error>> {
         let started_at = Instant::now();
-        let state = api.get_tree_state()?;
+        let state = api.get_tree_state().await?;
         Self::check_sync_duration(started_at, limits.max_duration)?;
         if state.next_index == self.next_position {
             if state.next_index > 0 {
@@ -253,7 +253,7 @@ impl TreeClient {
                     max_pages: limits.max_pages,
                 });
             }
-            let page = api.get_block_commitments(page_from, to_height)?;
+            let page = api.get_block_commitments(page_from, to_height).await?;
             pages_fetched += 1;
             Self::check_sync_duration(started_at, limits.max_duration)?;
 

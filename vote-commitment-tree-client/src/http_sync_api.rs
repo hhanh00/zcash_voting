@@ -48,7 +48,7 @@ pub enum HttpSyncError {
 
 /// HTTP-based implementation of [`TreeSyncApi`] for remote chain sync.
 ///
-/// Uses an injected blocking transport so this crate can own URL construction
+/// Uses an injected async transport so this crate can own URL construction
 /// and JSON parsing without selecting an HTTP stack for library consumers.
 /// Each instance is scoped to a specific voting round via `round_id`
 /// (hex-encoded in URL paths).
@@ -78,8 +78,11 @@ impl HttpTreeSyncApi {
         }
     }
 
-    fn get_json<T: serde::de::DeserializeOwned>(&self, url: String) -> Result<T, HttpSyncError> {
-        let response = self.transport.get(&url)?;
+    async fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: String,
+    ) -> Result<T, HttpSyncError> {
+        let response = self.transport.get(&url).await?;
         let body = self.success_body(&url, response)?;
         serde_json::from_slice(&body).map_err(HttpSyncError::Json)
     }
@@ -104,24 +107,24 @@ impl HttpTreeSyncApi {
 impl TreeSyncApi for HttpTreeSyncApi {
     type Error = HttpSyncError;
 
-    fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
+    async fn get_tree_state(&self) -> Result<TreeState, Self::Error> {
         let url = format!(
             "{}/shielded-vote/v1/commitment-tree/{}/latest",
             self.base_url, self.round_id
         );
-        let resp: QueryLatestTreeResponse = self.get_json(url)?;
+        let resp: QueryLatestTreeResponse = self.get_json(url).await?;
         resp.tree
             .ok_or(HttpSyncError::NoTreeState)?
             .into_tree_state()
             .map_err(HttpSyncError::Parse)
     }
 
-    fn get_root_at_height(&self, height: u32) -> Result<Option<Fp>, Self::Error> {
+    async fn get_root_at_height(&self, height: u32) -> Result<Option<Fp>, Self::Error> {
         let url = format!(
             "{}/shielded-vote/v1/commitment-tree/{}/{}",
             self.base_url, self.round_id, height
         );
-        let resp: QueryCommitmentTreeResponse = self.get_json(url)?;
+        let resp: QueryCommitmentTreeResponse = self.get_json(url).await?;
         match resp.tree {
             Some(state) => {
                 let ts = state.into_tree_state().map_err(HttpSyncError::Parse)?;
@@ -131,7 +134,7 @@ impl TreeSyncApi for HttpTreeSyncApi {
         }
     }
 
-    fn get_block_commitments(
+    async fn get_block_commitments(
         &self,
         from_height: u32,
         to_height: u32,
@@ -140,7 +143,7 @@ impl TreeSyncApi for HttpTreeSyncApi {
             "{}/shielded-vote/v1/commitment-tree/{}/leaves?from_height={}&to_height={}",
             self.base_url, self.round_id, from_height, to_height
         );
-        let resp: QueryCommitmentLeavesResponse = self.get_json(url)?;
+        let resp: QueryCommitmentLeavesResponse = self.get_json(url).await?;
         resp.into_block_commitments_page()
             .map_err(HttpSyncError::Parse)
     }

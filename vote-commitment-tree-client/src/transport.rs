@@ -1,4 +1,6 @@
-//! Small blocking transport abstraction for vote commitment tree sync.
+//! Small async transport abstraction for vote commitment tree sync.
+
+use std::{future::Future, pin::Pin};
 
 /// Response returned by a tree-sync transport request.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -14,7 +16,11 @@ pub enum TransportError {
     Request(String),
 }
 
-/// Blocking GET-only transport used by [`crate::http_sync_api::HttpTreeSyncApi`].
+/// A pinned boxed future returned by [`Transport::get`].
+pub type TransportFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<TransportResponse, TransportError>> + Send + 'a>>;
+
+/// Async GET-only transport used by [`crate::http_sync_api::HttpTreeSyncApi`].
 pub trait Transport: Send + Sync {
-    fn get(&self, url: &str) -> Result<TransportResponse, TransportError>;
+    fn get<'a>(&'a self, url: &'a str) -> TransportFuture<'a>;
 }

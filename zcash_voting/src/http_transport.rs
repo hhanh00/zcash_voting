@@ -1,4 +1,4 @@
-use std::{future::Future, sync::OnceLock, time::Duration};
+use std::{sync::OnceLock, time::Duration};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -38,13 +38,11 @@ struct HyperResponse {
 /// cleartext/HTTPS traffic without providing their own transport.
 pub struct HyperTransport {
     client: HyperClient,
-    runtime: BlockingRuntime,
 }
 
 impl HyperTransport {
     pub fn new() -> Self {
         ensure_rustls_provider();
-        let runtime = BlockingRuntime::new();
         let mut connector = HttpConnector::new();
         connector.enforce_http(false);
         let https = hyper_rustls::HttpsConnectorBuilder::new()
@@ -55,7 +53,7 @@ impl HyperTransport {
             .wrap_connector(connector);
         let client = Client::builder(TokioExecutor::new()).build(https);
 
-        Self { client, runtime }
+        Self { client }
     }
 
     async fn request(
@@ -118,38 +116,6 @@ impl Default for HyperTransport {
     }
 }
 
-struct BlockingRuntime {
-    inner: Option<tokio::runtime::Runtime>,
-}
-
-impl BlockingRuntime {
-    fn new() -> Self {
-        Self {
-            inner: Some(
-                tokio::runtime::Builder::new_multi_thread()
-                    .enable_all()
-                    .build()
-                    .expect("create tree-sync HTTP runtime"),
-            ),
-        }
-    }
-
-    fn block_on<F: Future>(&self, future: F) -> F::Output {
-        self.inner
-            .as_ref()
-            .expect("tree-sync HTTP runtime is unavailable")
-            .block_on(future)
-    }
-}
-
-impl Drop for BlockingRuntime {
-    fn drop(&mut self) {
-        if let Some(runtime) = self.inner.take() {
-            runtime.shutdown_background();
-        }
-    }
-}
-
 impl pir_client::Transport for HyperTransport {
     fn get<'a>(&'a self, url: &'a str) -> pir_client::TransportFuture<'a> {
         Box::pin(async move {
@@ -185,48 +151,28 @@ impl pir_client::Transport for HyperTransport {
 }
 
 impl vote_commitment_tree_client::transport::Transport for HyperTransport {
-    fn get(
-        &self,
-        url: &str,
-    ) -> std::result::Result<
-        vote_commitment_tree_client::transport::TransportResponse,
-        vote_commitment_tree_client::transport::TransportError,
-    > {
-        self.runtime
-            .block_on(async {
-                tokio::time::timeout(
-                    TREE_REQUEST_TIMEOUT,
-                    self.request(Method::GET, url, Vec::new(), MAX_TREE_RESPONSE_BYTES),
-                )
-                .await
-                .context("vote-tree HTTP request timed out")?
-            })
-            .map(
-                |response| vote_commitment_tree_client::transport::TransportResponse {
-                    status: response.status,
-                    body: response.body,
-                },
+    fn get<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> vote_commitment_tree_client::transport::TransportFuture<'a> {
+        Box::pin(async move {
+            tokio::time::timeout(
+                TREE_REQUEST_TIMEOUT,
+                self.request(Method::GET, url, Vec::new(), MAX_TREE_RESPONSE_BYTES),
             )
+            .await
+            .map_err(|_| {
+                vote_commitment_tree_client::transport::TransportError::Request(
+                    "vote-tree HTTP request timed out".to_string(),
+                )
+            })?
+            .map(|response| vote_commitment_tree_client::transport::TransportResponse {
+                status: response.status,
+                body: response.body,
+            })
             .map_err(|e| {
                 vote_commitment_tree_client::transport::TransportError::Request(e.to_string())
             })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::BlockingRuntime;
-
-    #[test]
-    fn blocking_runtime_drop_does_not_panic_inside_tokio_context() {
-        let outer = tokio::runtime::Runtime::new().unwrap();
-        let result = std::panic::catch_unwind(|| {
-            outer.block_on(async {
-                let runtime = BlockingRuntime::new();
-                drop(runtime);
-            });
-        });
-
-        assert!(result.is_ok());
+        })
     }
 }

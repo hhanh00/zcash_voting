@@ -30,7 +30,7 @@ where
     /// is an in-memory `BTreeMap` and all root lookups are infallible.
     type Error = Infallible;
 
-    fn get_block_commitments(
+    async fn get_block_commitments(
         &self,
         from_height: u32,
         to_height: u32,
@@ -46,11 +46,11 @@ where
         })
     }
 
-    fn get_root_at_height(&self, height: u32) -> Result<Option<Fp>, Infallible> {
+    async fn get_root_at_height(&self, height: u32) -> Result<Option<Fp>, Infallible> {
         Ok(self.root_at_height(height))
     }
 
-    fn get_tree_state(&self) -> Result<TreeState, Infallible> {
+    async fn get_tree_state(&self) -> Result<TreeState, Infallible> {
         Ok(TreeState {
             next_index: self.size(),
             root: self.root(),

@@ -22,3 +22,4 @@ libc = "0.2"
 rand = "0.8"
 orchard = { workspace = true }
 voting-circuits = { workspace = true }
+tokio = { version = "1", features = ["macros", "rt"] }

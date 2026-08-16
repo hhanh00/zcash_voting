@@ -18,7 +18,7 @@ use pasta_curves::Fp;
 use vote_commitment_tree::{TreeClient, TreeSyncApi};
 use vote_commitment_tree_client::{
     http_sync_api::{HttpSyncError, HttpTreeSyncApi},
-    transport::{Transport, TransportError, TransportResponse},
+    transport::{Transport, TransportError, TransportFuture, TransportResponse},
 };
 
 const BASE_URL: &str = "http://node.example";
@@ -51,14 +51,16 @@ impl MockTransport {
 }
 
 impl Transport for MockTransport {
-    fn get(&self, url: &str) -> Result<TransportResponse, TransportError> {
-        self.calls.lock().unwrap().push(url.to_string());
-        self.responses
-            .lock()
-            .unwrap()
-            .get_mut(url)
-            .and_then(VecDeque::pop_front)
-            .ok_or_else(|| TransportError::Request(format!("unexpected GET {url}")))
+    fn get<'a>(&'a self, url: &'a str) -> TransportFuture<'a> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push(url.to_string());
+            self.responses
+                .lock()
+                .unwrap()
+                .get_mut(url)
+                .and_then(VecDeque::pop_front)
+                .ok_or_else(|| TransportError::Request(format!("unexpected GET {url}")))
+        })
     }
 }
 
@@ -106,8 +108,8 @@ fn fp(x: u64) -> Fp {
     Fp::from(x)
 }
 
-#[test]
-fn get_tree_state_parses_response() {
+#[tokio::test]
+async fn get_tree_state_parses_response() {
     let root_b64 = fp_bytes_to_b64(fp(42));
     let transport = MockTransport::with_responses([(
         latest_url(),
@@ -117,15 +119,15 @@ fn get_tree_state_parses_response() {
         )),
     )]);
 
-    let state = api(transport.clone()).get_tree_state().unwrap();
+    let state = api(transport.clone()).get_tree_state().await.unwrap();
     assert_eq!(state.next_index, 10);
     assert_eq!(state.height, 5);
     assert_eq!(state.root, fp(42));
     transport.assert_called(&latest_url());
 }
 
-#[test]
-fn get_root_at_height_parses_response() {
+#[tokio::test]
+async fn get_root_at_height_parses_response() {
     let root_b64 = fp_bytes_to_b64(fp(99));
     let transport = MockTransport::with_responses([(
         root_url(7),
@@ -135,23 +137,23 @@ fn get_root_at_height_parses_response() {
         )),
     )]);
 
-    let root = api(transport).get_root_at_height(7).unwrap();
+    let root = api(transport).get_root_at_height(7).await.unwrap();
     assert_eq!(root, Some(fp(99)));
 }
 
-#[test]
-fn get_root_at_height_null_tree() {
+#[tokio::test]
+async fn get_root_at_height_null_tree() {
     let transport = MockTransport::with_responses([(
         root_url(999),
         json_response(r#"{"tree":null}"#.to_string()),
     )]);
 
-    let root = api(transport).get_root_at_height(999).unwrap();
+    let root = api(transport).get_root_at_height(999).await.unwrap();
     assert!(root.is_none());
 }
 
-#[test]
-fn get_block_commitments_parses_response() {
+#[tokio::test]
+async fn get_block_commitments_parses_response() {
     let body = format!(
         r#"{{"blocks":[{{"height":5,"start_index":0,"leaves":["{}","{}"],"root":"{}"}}],"next_from_height":12}}"#,
         fp_to_b64(100),
@@ -160,7 +162,7 @@ fn get_block_commitments_parses_response() {
     );
     let transport = MockTransport::with_responses([(leaves_url(1, 10), json_response(body))]);
 
-    let page = api(transport).get_block_commitments(1, 10).unwrap();
+    let page = api(transport).get_block_commitments(1, 10).await.unwrap();
     let blocks = page.blocks;
     assert_eq!(page.next_from_height, 12);
     assert_eq!(blocks.len(), 1);
@@ -172,20 +174,20 @@ fn get_block_commitments_parses_response() {
     assert_eq!(blocks[0].root, fp(999));
 }
 
-#[test]
-fn get_block_commitments_empty() {
+#[tokio::test]
+async fn get_block_commitments_empty() {
     let transport = MockTransport::with_responses([(
         leaves_url(1, 10),
         json_response(r#"{"blocks":[]}"#.to_string()),
     )]);
 
-    let page = api(transport).get_block_commitments(1, 10).unwrap();
+    let page = api(transport).get_block_commitments(1, 10).await.unwrap();
     assert!(page.blocks.is_empty());
     assert_eq!(page.next_from_height, 0);
 }
 
-#[test]
-fn full_sync_pipeline() {
+#[tokio::test]
+async fn full_sync_pipeline() {
     let mut tree_server = vote_commitment_tree::MemoryTreeServer::empty();
     tree_server.append(fp(10)).unwrap();
     tree_server.checkpoint(1).unwrap();
@@ -235,7 +237,7 @@ fn full_sync_pipeline() {
     let mut client = TreeClient::empty();
     client.mark_position(0);
     client.mark_position(1);
-    client.sync(&api).unwrap();
+    client.sync(&api).await.unwrap();
 
     assert_eq!(client.size(), 3);
     assert_eq!(client.last_synced_height(), Some(2));
@@ -246,8 +248,8 @@ fn full_sync_pipeline() {
     assert!(client.witness(1, 2).unwrap().verify(fp(20), root_at_2));
 }
 
-#[test]
-fn full_sync_uses_paginated_leaf_responses() {
+#[tokio::test]
+async fn full_sync_uses_paginated_leaf_responses() {
     let mut tree_server = vote_commitment_tree::MemoryTreeServer::empty();
     tree_server.append(fp(10)).unwrap();
     tree_server.checkpoint(1).unwrap();
@@ -285,7 +287,7 @@ fn full_sync_uses_paginated_leaf_responses() {
 
     let api = api(transport.clone());
     let mut client = TreeClient::empty();
-    client.sync(&api).unwrap();
+    client.sync(&api).await.unwrap();
 
     transport.assert_called(&leaves_url(0, 2));
     transport.assert_called(&leaves_url(2, 2));
@@ -294,8 +296,8 @@ fn full_sync_uses_paginated_leaf_responses() {
     assert_eq!(client.root(), root_at_2);
 }
 
-#[test]
-fn incremental_sync() {
+#[tokio::test]
+async fn incremental_sync() {
     let mut tree_server = vote_commitment_tree::MemoryTreeServer::empty();
     tree_server.append(fp(10)).unwrap();
     tree_server.checkpoint(1).unwrap();
@@ -357,12 +359,12 @@ fn incremental_sync() {
     let api = api(transport);
     let mut client = TreeClient::empty();
     client.mark_position(0);
-    client.sync(&api).unwrap();
+    client.sync(&api).await.unwrap();
     assert_eq!(client.size(), 1);
     assert_eq!(client.last_synced_height(), Some(1));
 
     client.mark_position(1);
-    client.sync(&api).unwrap();
+    client.sync(&api).await.unwrap();
     assert_eq!(client.size(), 3);
     assert_eq!(client.last_synced_height(), Some(2));
     assert_eq!(client.root(), root_at_2);
@@ -370,22 +372,22 @@ fn incremental_sync() {
     assert!(client.witness(1, 2).unwrap().verify(fp(20), root_at_2));
 }
 
-#[test]
-fn server_error_propagates() {
+#[tokio::test]
+async fn server_error_propagates() {
     let transport = MockTransport::with_responses([(
         latest_url(),
         status_response(500, "internal server error"),
     )]);
 
-    let result = api(transport).get_tree_state();
+    let result = api(transport).get_tree_state().await;
     assert!(matches!(
         result,
         Err(HttpSyncError::HttpStatus { status: 500, .. })
     ));
 }
 
-#[test]
-fn empty_tree_sync() {
+#[tokio::test]
+async fn empty_tree_sync() {
     let transport = MockTransport::with_responses([(
         latest_url(),
         json_response(format!(
@@ -396,13 +398,13 @@ fn empty_tree_sync() {
 
     let api = api(transport);
     let mut client = TreeClient::empty();
-    client.sync(&api).unwrap();
+    client.sync(&api).await.unwrap();
     assert_eq!(client.size(), 0);
     assert_eq!(client.last_synced_height(), None);
 }
 
-#[test]
-fn witness_hex_roundtrip() {
+#[tokio::test]
+async fn witness_hex_roundtrip() {
     let mut tree_server = vote_commitment_tree::MemoryTreeServer::empty();
     tree_server.append(fp(42)).unwrap();
     tree_server.checkpoint(1).unwrap();
@@ -436,7 +438,7 @@ fn witness_hex_roundtrip() {
     let api = api(transport);
     let mut client = TreeClient::empty();
     client.mark_position(0);
-    client.sync(&api).unwrap();
+    client.sync(&api).await.unwrap();
 
     let witness_hex = hex::encode(client.witness(0, 1).unwrap().to_bytes());
     let decoded_bytes = hex::decode(&witness_hex).unwrap();

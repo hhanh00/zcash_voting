@@ -74,8 +74,8 @@ pub async fn van_witness(
 }
 
 /// Drops cached vote tree state for one round, or all rounds when `round_id` is empty.
-pub fn reset_vote_tree(db: &VotingDb, round_id: &str) -> Result<(), VotingError> {
-    vote_tree_sync_for(db)?.reset(round_id)
+pub async fn reset_vote_tree(db: &VotingDb, round_id: &str) -> Result<(), VotingError> {
+    vote_tree_sync_for(db)?.reset(round_id).await
 }
 
 /// Drops cached vote tree state and, for round-scoped resets, clears locally
@@ -93,7 +93,7 @@ pub fn reset_vote_tree(db: &VotingDb, round_id: &str) -> Result<(), VotingError>
 /// When `round_id` is empty, only the process-local vote tree cache is reset
 /// account-wide; no persisted delegation setup columns are cleared.
 pub async fn reset_voting_session_state(db: &VotingDb, round_id: &str) -> Result<(), VotingError> {
-    reset_vote_tree(db, round_id)?;
+    reset_vote_tree(db, round_id).await?;
     if !round_id.is_empty() {
         db.clear_unsigned_delegation_setup_fields(round_id).await?;
     }
