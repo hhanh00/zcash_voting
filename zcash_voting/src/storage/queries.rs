@@ -2314,11 +2314,11 @@ pub async fn clear_stale_share_delegations_for_intent(
                AND proposal_id = :proposal_id
                AND NOT EXISTS (
                    SELECT 1 FROM voting_votes
-                   WHERE votes.round_id = share_delegations.round_id
-                     AND votes.wallet_id = share_delegations.wallet_id
-                     AND votes.bundle_index = share_delegations.bundle_index
-                     AND votes.proposal_id = share_delegations.proposal_id
-                     AND votes.choice = :choice
+                   WHERE voting_votes.round_id = voting_share_delegations.round_id
+                     AND voting_votes.wallet_id = voting_share_delegations.wallet_id
+                     AND voting_votes.bundle_index = voting_share_delegations.bundle_index
+                     AND voting_votes.proposal_id = voting_share_delegations.proposal_id
+                     AND voting_votes.choice = :choice
                )",
             named_params! {
                 ":round_id": round_id,
@@ -2589,7 +2589,7 @@ pub async fn record_vote_submission(
                          AND wallet_id = :wallet_id
                          AND proposal_id = :proposal_id
                          AND skipped = 0
-                         AND choice = votes.choice
+                         AND choice = voting_votes.choice
                    )
                )",
             named_params! {
@@ -2950,7 +2950,7 @@ pub(crate) async fn record_share_delegation(
          ON CONFLICT (round_id, wallet_id, bundle_index, proposal_id, share_index) DO UPDATE SET \
          sent_to_urls = excluded.sent_to_urls, \
          submit_at = excluded.submit_at \
-         WHERE share_delegations.nullifier = excluded.nullifier",
+         WHERE voting_share_delegations.nullifier = excluded.nullifier",
         named_params! {
             ":round_id": round_id,
             ":wallet_id": wallet_id,
