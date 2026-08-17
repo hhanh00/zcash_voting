@@ -284,9 +284,9 @@ fn parse_merkle_path(witness: &WitnessData) -> Result<MerklePath, VotingError> {
 // Main entry point
 // ================================================================
 
-// 64 MiB matches the existing proof/key warm-up threads and gives Halo2
-// synthesis/keygen enough headroom on simulator builds with smaller defaults.
-const DELEGATION_STACK_BYTES: usize = 64 * 1024 * 1024;
+// 512 MiB gives Halo2 synthesis/keygen headroom on desktop builds: the
+// delegation circuit recurses deeply and 64 MiB still overflowed on macOS.
+const DELEGATION_STACK_BYTES: usize = 512 * 1024 * 1024;
 
 type DelegationKeys = (
     Params<EqAffine>,

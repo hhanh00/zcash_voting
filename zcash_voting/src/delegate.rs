@@ -7,6 +7,8 @@
 pub use crate::phases::DelegationPhase;
 
 pub use crate::lwd::branch_id_for_height;
+use std::collections::BTreeSet;
+
 use crate::note_bundling::BundlePolicy;
 use crate::{
     governance::BUNDLE_NOTE_SLOTS,
@@ -387,7 +389,20 @@ pub async fn prepare_delegation_bundle_with_inputs(
     };
 
     // Persist the round tree state and ensure witnesses are present in the
-    // voting database.
+    // voting database. The caller may supply witnesses for all eligible notes
+    // (multi-bundle rounds), but each bundle's witnesses must match exactly
+    // the notes planned for it — build_and_prove_delegation rejects extras.
+    let bundle_positions = prepared
+        .bundle_note_infos
+        .iter()
+        .map(|note| note.position)
+        .collect::<BTreeSet<_>>();
+    let bundle_witnesses: Vec<WitnessData> = params
+        .witnesses
+        .iter()
+        .filter(|w| bundle_positions.contains(&w.position))
+        .cloned()
+        .collect();
     voting_db
         .store_tree_state(&prepared.round_id, &prepared.anchor_tree_state_bytes)
         .await?;
@@ -400,7 +415,7 @@ pub async fn prepare_delegation_bundle_with_inputs(
         .await?
     {
         voting_db
-            .store_witnesses(&prepared.round_id, prepared.bundle_index, &params.witnesses)
+            .store_witnesses(&prepared.round_id, prepared.bundle_index, &bundle_witnesses)
             .await?;
     }
 

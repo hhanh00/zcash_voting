@@ -80,7 +80,7 @@ pub use types::{
 /// This is intentionally best-effort at the cache layer: callers should invoke
 /// it from a background task before the first proof is needed.
 pub fn warm_proving_caches() {
-    const KEYGEN_STACK_BYTES: usize = 64 * 1024 * 1024;
+    const KEYGEN_STACK_BYTES: usize = 512 * 1024 * 1024;
 
     let handles = [
         std::thread::Builder::new()

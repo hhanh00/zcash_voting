@@ -13,7 +13,7 @@ use crate::types::{
 
 // Vote proof build runs circuit synthesis + MockProver + proof generation, which can
 // overflow the default simulator thread stack. Run it on a dedicated large-stack thread.
-const VOTE_PROOF_STACK_BYTES: usize = 64 * 1024 * 1024;
+const VOTE_PROOF_STACK_BYTES: usize = 512 * 1024 * 1024;
 
 /// Build vote commitment + ZKP #2.
 ///

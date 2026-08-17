@@ -75,6 +75,18 @@ pub struct VotingDb {
     wallet_id: Mutex<String>,
 }
 
+/// Clones the shared pool and the wallet id; the wallet id is only written
+/// once at open, so a fresh mutex is safe. Used to hand a db handle to a
+/// dedicated proving thread.
+impl Clone for VotingDb {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            wallet_id: Mutex::new(self.wallet_id.lock().unwrap().clone()),
+        }
+    }
+}
+
 impl VotingDb {
     /// Open (or create) the voting database at the given path.
     /// Runs migrations automatically.

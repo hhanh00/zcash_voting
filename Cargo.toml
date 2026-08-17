@@ -20,3 +20,9 @@ zcash_client_backend = { version = "0.24.0-rc.3", default-features = false, feat
 zcash_keys = { version = "0.16.0", features = ["orchard"] }
 zcash_primitives = { version = "0.30.0" }
 zcash_protocol = { version = "0.10.0" }
+
+# Local patched pir-client: the async PirClient lacks a public circuit_root
+# accessor (private field); hosts genericizing over a PIR proof source need
+# one. See /Users/hanh/projects/pir-client-0.4.0-rc.7.
+[patch.crates-io]
+pir-client = { path = "/Users/hanh/projects/pir-client-0.4.0-rc.7" }
