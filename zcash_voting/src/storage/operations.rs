@@ -776,12 +776,12 @@ impl VotingDb {
     /// The padded-slot nullifiers we cache are derived to match what the
     /// circuit builder asks for at proof-gen time (see
     /// `padded_nullifiers_for_circuit`).
-    pub async fn precompute_delegation_pir(
+    pub async fn precompute_delegation_pir<P: crate::pir::PirProofSource>(
         &self,
         round_id: &str,
         bundle_index: u32,
         notes: &[NoteInfo],
-        pir_client: &pir_client::PirClientBlocking,
+        pir_client: &P,
         network: Network,
     ) -> Result<DelegationPirPrecomputeResult, VotingError> {
         let mut conn = self.conn().await?;
@@ -840,12 +840,7 @@ impl VotingDb {
             missing.len()
         );
         let missing_nullifiers: Vec<_> = missing.iter().map(|(_, nf)| *nf).collect();
-        let raw_fetched_proofs =
-            pir_client
-                .fetch_proofs(&missing_nullifiers)
-                .map_err(|e| VotingError::Internal {
-                    message: format!("PIR parallel fetch failed: {e}"),
-                })?;
+        let raw_fetched_proofs = pir_client.fetch_proofs(&missing_nullifiers).await?;
         if raw_fetched_proofs.len() != missing_nullifiers.len() {
             return Err(VotingError::Internal {
                 message: format!(
@@ -897,13 +892,13 @@ impl VotingDb {
     /// For padded notes (< 5 real notes), the prover fetches proofs internally via PIR.
     ///
     /// Stores the proof result and advances phase to `DelegationProved`.
-    pub async fn build_and_prove_delegation(
+    pub async fn build_and_prove_delegation<P: crate::pir::PirProofSource>(
         &self,
         round_id: &str,
         bundle_index: u32,
         notes: &[NoteInfo],
         keys: &DelegationKeys,
-        pir_client: &pir_client::PirClientBlocking,
+        pir_client: &P,
         stages: &dyn DelegationProgressReporter,
     ) -> Result<DelegationProofResult, VotingError> {
         let total_start = std::time::Instant::now();

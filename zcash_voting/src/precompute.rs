@@ -117,12 +117,12 @@ fn vote_tree_sync_for(db: &VotingDb) -> Result<Arc<crate::tree_sync::VoteTreeSyn
 /// Fetches and persists PIR-backed IMT non-membership proofs for one bundle.
 ///
 /// This must run after padded-note secrets have been initialized for the bundle.
-pub async fn delegation_pir(
+pub async fn delegation_pir<P: crate::pir::PirProofSource>(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     notes: &[NoteInfo],
-    pir_client: &pir_client::PirClientBlocking,
+    pir_client: &P,
     network: Network,
 ) -> Result<PirPrecomputeReport, VotingError> {
     let result = db

@@ -630,10 +630,10 @@ impl PreparedDelegationBundle {
     }
 
     /// Generates and persists the delegation proof for this prepared bundle.
-    pub async fn prove(
+    pub async fn prove<P: crate::pir::PirProofSource>(
         &self,
         voting_db: &VotingDb,
-        pir_client: &pir_client::PirClientBlocking,
+        pir_client: &P,
         stages: &dyn DelegationProgressReporter,
     ) -> Result<DelegationProof, VotingError> {
         crate::delegate::prove(
@@ -792,13 +792,13 @@ pub async fn signing_request(
 ///
 /// Witnesses and PIR proof precompute data must already be present. The proof
 /// result is checked against PCZT-derived public fields before persistence.
-pub async fn prove(
+pub async fn prove<P: crate::pir::PirProofSource>(
     db: &VotingDb,
     round_id: &str,
     bundle_index: u32,
     notes: &[NoteInfo],
     keys: &DelegationKeys,
-    pir_client: &pir_client::PirClientBlocking,
+    pir_client: &P,
     stages: &dyn DelegationProgressReporter,
 ) -> Result<DelegationProof, VotingError> {
     stages.on_progress(DelegationProgress::ProofStarting);

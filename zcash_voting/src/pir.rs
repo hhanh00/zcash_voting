@@ -9,6 +9,8 @@
 
 use std::sync::Arc;
 
+use pasta_curves::pallas;
+
 use crate::config::{validate_and_convert_pir_layout, PirLayout};
 use crate::types::VotingError;
 
@@ -36,6 +38,61 @@ pub use pir_client::{
     ImtProofData, PirClient, PirClientBlocking, Transport, TransportFuture, TransportResponse,
 };
 pub use pir_types::PirLayout as NegotiatedPirLayout;
+
+/// PIR proof source for the delegation precompute step.
+///
+/// Implemented for the async [`PirClient`] (used from async hosts) and the
+/// blocking [`PirClientBlocking`] (which owns its own runtime and must only
+/// be used from a thread without a tokio runtime context). The delegation
+/// prove path is generic over this trait, so hosts pick their client shape.
+pub trait PirProofSource: Send + Sync {
+    /// The PIR circuit root (the PIR root padded to tree depth 29).
+    fn circuit_root(&self) -> pallas::Base;
+
+    /// Fetches Merkle path proofs for the given nullifiers.
+    fn fetch_proofs(
+        &self,
+        nullifiers: &[pallas::Base],
+    ) -> impl std::future::Future<Output = Result<Vec<ImtProofData>, VotingError>> + Send;
+}
+
+fn map_pir_fetch_error(e: impl std::fmt::Display) -> VotingError {
+    VotingError::Internal {
+        message: format!("PIR parallel fetch failed: {e}"),
+    }
+}
+
+impl PirProofSource for PirClient {
+    fn circuit_root(&self) -> pallas::Base {
+        PirClient::circuit_root(self)
+    }
+
+    fn fetch_proofs(
+        &self,
+        nullifiers: &[pallas::Base],
+    ) -> impl std::future::Future<Output = Result<Vec<ImtProofData>, VotingError>> + Send {
+        async move {
+            PirClient::fetch_proofs(self, nullifiers)
+                .await
+                .map_err(map_pir_fetch_error)
+        }
+    }
+}
+
+impl PirProofSource for PirClientBlocking {
+    fn circuit_root(&self) -> pallas::Base {
+        PirClientBlocking::circuit_root(self)
+    }
+
+    fn fetch_proofs(
+        &self,
+        nullifiers: &[pallas::Base],
+    ) -> impl std::future::Future<Output = Result<Vec<ImtProofData>, VotingError>> + Send {
+        async move {
+            PirClientBlocking::fetch_proofs(self, nullifiers).map_err(map_pir_fetch_error)
+        }
+    }
+}
 
 /// Converts a wallet-config [`PirLayout`] into the PIR client's negotiated layout.
 ///
