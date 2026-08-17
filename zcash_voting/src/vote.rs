@@ -810,7 +810,7 @@ pub(crate) async fn record_vc_position_with_conn(
         })?;
     let stored_vote: Option<(i64, Option<Vec<u8>>, Option<String>, Option<i64>)> = {
         conn.query_row(
-            "SELECT choice, commitment, commitment_bundle_json, vc_tree_position FROM votes
+            "SELECT choice, commitment, commitment_bundle_json, vc_tree_position FROM voting_votes
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
             named_params! {
@@ -896,7 +896,7 @@ pub async fn recovery_bundle(
     let wallet_id = db.wallet_id();
     let json: Option<Option<String>> = conn
         .query_row(
-            "SELECT commitment_bundle_json FROM votes
+            "SELECT commitment_bundle_json FROM voting_votes
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
             named_params! {
@@ -950,7 +950,7 @@ async fn store_recovery_json_for_vote(
     let wallet_id = db.wallet_id();
     let rows = conn
         .execute(
-            "UPDATE votes SET commitment_bundle_json = :json
+            "UPDATE voting_votes SET commitment_bundle_json = :json
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id
                AND choice = :choice
@@ -1111,7 +1111,7 @@ async fn handle_vote_identity_update_miss(
 ) -> Result<(), VotingError> {
     let existing: Option<(i64, Option<Vec<u8>>)> = conn
         .query_row(
-            "SELECT choice, commitment FROM votes
+            "SELECT choice, commitment FROM voting_votes
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
             named_params! {
@@ -1154,7 +1154,7 @@ async fn handle_vc_position_update_miss(
 ) -> Result<(), VotingError> {
     let existing_position: Option<Option<i64>> = conn
         .query_row(
-            "SELECT vc_tree_position FROM votes
+            "SELECT vc_tree_position FROM voting_votes
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
             named_params! {
@@ -1195,7 +1195,7 @@ async fn store_recovery_json_with_vc_position_if_unchanged(
 ) -> Result<(), VotingError> {
     let rows = conn
         .execute(
-            "UPDATE votes SET commitment_bundle_json = :json, vc_tree_position = :pos
+            "UPDATE voting_votes SET commitment_bundle_json = :json, vc_tree_position = :pos
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id
                AND choice = :choice
@@ -1232,7 +1232,7 @@ async fn store_recovery_json_with_vc_position_if_unchanged(
         .await?;
         let current: Option<(Option<String>, Option<i64>)> = conn
             .query_row(
-                "SELECT commitment_bundle_json, vc_tree_position FROM votes
+                "SELECT commitment_bundle_json, vc_tree_position FROM voting_votes
                  WHERE round_id = :round_id AND wallet_id = :wallet_id
                    AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
                 named_params! {
@@ -1291,7 +1291,7 @@ async fn store_vc_position_if_unset_or_same(
 ) -> Result<(), VotingError> {
     let rows = conn
         .execute(
-            "UPDATE votes SET vc_tree_position = :pos
+            "UPDATE voting_votes SET vc_tree_position = :pos
              WHERE round_id = :round_id AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index AND proposal_id = :proposal_id
                AND choice = :choice
@@ -1394,7 +1394,7 @@ async fn ensure_vote_rebuild_allowed(
     let wallet_id = db.wallet_id();
     let has_tx_hash = conn
         .query_row(
-            "SELECT tx_hash IS NOT NULL FROM votes
+            "SELECT tx_hash IS NOT NULL FROM voting_votes
              WHERE round_id = :round_id
                AND wallet_id = :wallet_id
                AND bundle_index = :bundle_index
@@ -2385,7 +2385,7 @@ mod tests {
         let position: Option<i64> = db
             .conn()
             .query_row(
-                "SELECT vc_tree_position FROM votes
+                "SELECT vc_tree_position FROM voting_votes
                  WHERE round_id = :round_id AND wallet_id = :wallet_id
                    AND bundle_index = 0 AND proposal_id = 1",
                 named_params! {

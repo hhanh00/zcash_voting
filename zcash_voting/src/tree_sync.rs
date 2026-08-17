@@ -133,7 +133,7 @@ mod tests {
         queries::record_vote_submission(&conn, ROUND_ID, WALLET_ID, 0, 1, "confirmed-vote")
             .unwrap();
         conn.execute(
-            "UPDATE votes SET commitment_bundle_json = '{}', vc_tree_position = 1
+            "UPDATE voting_votes SET commitment_bundle_json = '{}', vc_tree_position = 1
              WHERE round_id = ?1 AND wallet_id = ?2
                AND bundle_index = 0 AND proposal_id = 1",
             rusqlite::params![ROUND_ID, WALLET_ID],

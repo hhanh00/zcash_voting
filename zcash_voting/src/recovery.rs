@@ -502,7 +502,7 @@ mod tests {
         let rows = db
             .conn()
             .execute(
-                "UPDATE votes SET commitment_bundle_json = :commitment_bundle_json,
+                "UPDATE voting_votes SET commitment_bundle_json = :commitment_bundle_json,
                         vc_tree_position = :vc_tree_position
                  WHERE round_id = :round_id AND wallet_id = :wallet_id
                  AND bundle_index = :bundle_index AND proposal_id = :proposal_id",
