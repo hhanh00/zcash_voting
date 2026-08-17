@@ -8,6 +8,7 @@ use std::sync::Mutex;
 use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     SqlitePool,
+    SqliteConnection,
 };
 
 use crate::types::{Network, VotingError};
@@ -135,12 +136,11 @@ impl VotingDb {
     /// Unlike [`Self::open`], this does not create a file, set WAL, or touch
     /// `PRAGMA user_version`; the pool owner controls those settings. Call
     /// `set_wallet_id` before performing any round operations.
-    pub async fn from_pool(pool: SqlitePool) -> Result<Self, VotingError> {
-        let mut conn = pool.acquire().await.map_err(|e| VotingError::Internal {
-            message: format!("failed to acquire database connection: {e}"),
-        })?;
-        migrations::migrate(&mut conn).await?;
-        drop(conn);
+    pub async fn from_pool(
+        pool: SqlitePool,
+        conn: &mut SqliteConnection,
+    ) -> Result<Self, VotingError> {
+        migrations::migrate(conn).await?;
 
         Ok(Self {
             pool,

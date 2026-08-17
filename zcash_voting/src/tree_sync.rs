@@ -537,7 +537,8 @@ impl VoteTreeSync {
         bundle_index: u32,
         anchor_height: u32,
     ) -> Result<VanWitness, VotingError> {
-        let van_position = db.load_van_position(round_id, bundle_index).await?;
+        let mut conn = db.conn().await?;
+        let van_position = db.load_van_position(&mut conn, round_id, bundle_index).await?;
 
         let round_client = {
             let clients = self.clients.lock().await;

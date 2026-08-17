@@ -8,6 +8,7 @@ use orchard::{
 };
 use pasta_curves::pallas;
 use sqlx::Connection as _;
+use sqlx::SqliteConnection;
 use voting_circuits::delegation::{synthetic_padding_note_parts, ImtProofData};
 use zcash_keys::keys::UnifiedFullViewingKey;
 
@@ -375,17 +376,17 @@ impl VotingDb {
     }
 
     /// List all rounds.
-    pub async fn list_rounds(&self) -> Result<Vec<RoundSummary>, VotingError> {
-        let mut conn = self.conn().await?;
+    pub async fn list_rounds(&self,
+        conn: &mut SqliteConnection) -> Result<Vec<RoundSummary>, VotingError> {
         let wallet_id = self.wallet_id();
-        queries::list_rounds(&mut conn, &wallet_id).await
+        queries::list_rounds(conn, &wallet_id).await
     }
 
     /// Get all votes for a round, including proposal, bundle, and choice.
-    pub async fn get_votes(&self, round_id: &str) -> Result<Vec<VoteRecord>, VotingError> {
-        let mut conn = self.conn().await?;
+    pub async fn get_votes(&self,
+        conn: &mut SqliteConnection, round_id: &str) -> Result<Vec<VoteRecord>, VotingError> {
         let wallet_id = self.wallet_id();
-        queries::get_votes(&mut conn, round_id, &wallet_id).await
+        queries::get_votes(conn, round_id, &wallet_id).await
     }
 
     /// Test-fixture helper for inserting a stored vote without running the
@@ -456,10 +457,10 @@ impl VotingDb {
     }
 
     /// Get the number of bundles for a round.
-    pub async fn get_bundle_count(&self, round_id: &str) -> Result<u32, VotingError> {
-        let mut conn = self.conn().await?;
+    pub async fn get_bundle_count(&self,
+        conn: &mut SqliteConnection, round_id: &str) -> Result<u32, VotingError> {
         let wallet_id = self.wallet_id();
-        queries::get_bundle_count(&mut conn, round_id, &wallet_id).await
+        queries::get_bundle_count(conn, round_id, &wallet_id).await
     }
 
     /// Enforce the pre-vote confirmation barrier for imported capability rounds.
@@ -1246,12 +1247,12 @@ impl VotingDb {
     /// Load the VAN leaf position for a bundle.
     pub async fn load_van_position(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
         bundle_index: u32,
     ) -> Result<u32, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::load_van_position(&mut conn, round_id, &wallet_id, bundle_index).await
+        queries::load_van_position(conn, round_id, &wallet_id, bundle_index).await
     }
 
     /// Reconstruct the delegation TX payload using an externally provided signature.
@@ -1370,23 +1371,23 @@ impl VotingDb {
 
     pub async fn get_delegation_tx_hash(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
         bundle_index: u32,
     ) -> Result<Option<String>, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_delegation_tx_hash(&mut conn, round_id, &wallet_id, bundle_index).await
+        queries::get_delegation_tx_hash(conn, round_id, &wallet_id, bundle_index).await
     }
 
     pub async fn get_vote_tx_hash(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
     ) -> Result<Option<String>, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_vote_tx_hash(&mut conn, round_id, &wallet_id, bundle_index, proposal_id).await
+        queries::get_vote_tx_hash(conn, round_id, &wallet_id, bundle_index, proposal_id).await
     }
 
     pub async fn record_vote_submission(
@@ -1481,14 +1482,14 @@ impl VotingDb {
     /// that distinguishes "JSON present but position pending" from "no JSON".
     pub(crate) async fn get_commitment_bundle_recovery_fields(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
     ) -> Result<Option<(Option<String>, Option<i64>)>, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         queries::get_commitment_bundle_recovery(
-            &mut conn,
+            conn,
             round_id,
             &wallet_id,
             bundle_index,
@@ -1587,11 +1588,11 @@ impl VotingDb {
     /// Load all share delegations for a round.
     pub async fn get_share_delegations(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
     ) -> Result<Vec<crate::ShareDelegationRecord>, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_share_delegations(&mut conn, round_id, &wallet_id).await
+        queries::get_share_delegations(conn, round_id, &wallet_id).await
     }
 
     /// Load only unconfirmed share delegations for a round.

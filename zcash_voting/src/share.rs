@@ -102,7 +102,8 @@ pub async fn list(
     db: &VotingDb,
     round_id: &str,
 ) -> Result<Vec<ShareDelegationRecord>, VotingError> {
-    db.get_share_delegations(round_id).await
+    let mut conn = db.conn().await?;
+    db.get_share_delegations(&mut conn, round_id).await
 }
 
 /// Lists unconfirmed helper-share records for retry and polling.

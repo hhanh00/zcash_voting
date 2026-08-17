@@ -5,6 +5,7 @@
 //! instead of maintaining one lossy round-level phase.
 
 use crate::named_params;
+use sqlx::SqliteConnection;
 use crate::storage::sqlx_ext::{ConnectionExt, OptionalExtension};
 
 use crate::{storage::VotingDb, types::VotingError};
@@ -148,10 +149,10 @@ impl VotingDb {
     /// for the current wallet.
     pub async fn delegation_phase(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
         bundle_index: u32,
     ) -> Result<DelegationPhase, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let phase = conn
             .query_row(
@@ -199,9 +200,9 @@ impl VotingDb {
     /// Results are sorted by `bundle_index` and scoped to the current wallet id.
     pub async fn delegation_phases(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
     ) -> Result<Vec<(u32, DelegationPhase)>, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let mut stmt = conn
             .prepare(
@@ -256,11 +257,11 @@ impl VotingDb {
     /// Loads the canonical vote phase for one bundle/proposal pair.
     pub async fn vote_phase(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
     ) -> Result<VotePhase, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let phase = conn
             .query_row(
@@ -301,9 +302,9 @@ impl VotingDb {
     /// Lists canonical vote phases for all votes in one round.
     pub async fn vote_phases(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
     ) -> Result<Vec<(u32, u32, VotePhase)>, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let mut stmt = conn
             .prepare(
@@ -347,12 +348,12 @@ impl VotingDb {
     /// Loads the canonical helper-share phase for one share record.
     pub async fn share_phase(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
         share_index: u32,
     ) -> Result<SharePhase, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let phase = conn
             .query_row(
@@ -394,9 +395,9 @@ impl VotingDb {
     /// Lists canonical helper-share phases for all shares in one round.
     pub async fn share_phases(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
     ) -> Result<Vec<(u32, u32, u32, SharePhase)>, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let mut stmt = conn
             .prepare(

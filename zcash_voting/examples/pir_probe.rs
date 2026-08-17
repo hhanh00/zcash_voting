@@ -46,7 +46,8 @@ fn main() {
         let _ = std::fs::remove_file(db_path);
         let opts = SqliteConnectOptions::new().filename(db_path).create_if_missing(true);
         let pool = SqlitePoolOptions::new().max_connections(5).connect_with(opts).await.unwrap();
-        let db = VotingDb::from_pool(pool).await.unwrap();
+        let mut conn = pool.acquire().await.unwrap();
+        let db = VotingDb::from_pool(pool, &mut conn).await.unwrap();
         db.set_wallet_id("probe-wallet");
         db
     });

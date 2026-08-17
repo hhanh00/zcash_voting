@@ -9,6 +9,7 @@ use crate::named_params;
 use crate::storage::sqlx_ext::ConnectionExt;
 use serde::{Deserialize, Serialize};
 use sqlx::Connection as _;
+use sqlx::SqliteConnection;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::phases::{DelegationPhase, SharePhase, VotePhase};
@@ -120,9 +121,9 @@ impl VotingDb {
     /// Load the voter's decisions for a round, sorted by proposal id.
     pub async fn ballot_intents(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
     ) -> Result<Vec<(u32, Decision)>, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         let mut stmt = conn
             .prepare(
@@ -458,12 +459,13 @@ async fn delegation_statuses(
     round_id: &str,
     delegation: &BTreeMap<u32, DelegationPhase>,
 ) -> Result<Vec<DelegationStatus>, VotingError> {
+    let mut conn = db.conn().await?;
     let mut result = Vec::with_capacity(delegation.len());
     for (&bundle_index, &phase) in delegation {
         result.push(DelegationStatus {
             bundle_index,
             phase,
-            tx_hash: db.get_delegation_tx_hash(round_id, bundle_index).await?,
+            tx_hash: db.get_delegation_tx_hash(&mut conn, round_id, bundle_index).await?,
         });
     }
     Ok(result)
@@ -497,8 +499,9 @@ async fn recovered_delegation_work_from_steps(
                         "poll delegation step missing phase for round={round_id}, bundle={bundle_index}"
                     ))
                 })?;
+                let mut conn = db.conn().await?;
                 let tx_hash = db
-                    .get_delegation_tx_hash(round_id, bundle_index)
+                    .get_delegation_tx_hash(&mut conn, round_id, bundle_index)
                     .await?
                     .ok_or_else(|| {
                         missing_recovery_field(format!(
@@ -552,8 +555,9 @@ async fn recovered_vote_work_from_steps(
                 bundle_index,
                 proposal_id,
             } => {
+                let mut conn = db.conn().await?;
                 let tx_hash = db
-                    .get_vote_tx_hash(round_id, bundle_index, proposal_id)
+                    .get_vote_tx_hash(&mut conn, round_id, bundle_index, proposal_id)
                     .await?
                     .ok_or_else(|| {
                         missing_recovery_field(format!(
@@ -732,6 +736,7 @@ fn completed_vote_display(
 /// confirmations.
 pub async fn resume_plan(
     db: &VotingDb,
+    conn: &mut SqliteConnection,
     round_id: &str,
     proposal_ids: &[u32],
 ) -> Result<RoundPlan, VotingError> {
@@ -740,21 +745,21 @@ pub async fn resume_plan(
     }
 
     let delegation: BTreeMap<u32, DelegationPhase> =
-        db.delegation_phases(round_id).await?.into_iter().collect();
+        db.delegation_phases(conn, round_id).await?.into_iter().collect();
     let votes: BTreeMap<(u32, u32), VotePhase> = db
-        .vote_phases(round_id)
+        .vote_phases(conn, round_id)
         .await?
         .into_iter()
         .map(|(b, p, ph)| ((b, p), ph))
         .collect();
     let vote_choices: BTreeMap<(u32, u32), u32> = db
-        .get_votes(round_id)
+        .get_votes(conn, round_id)
         .await?
         .into_iter()
         .map(|vote| ((vote.bundle_index, vote.proposal_id), vote.choice))
         .collect();
-    let share_phase_rows = db.share_phases(round_id).await?;
-    let share_delegations = db.get_share_delegations(round_id).await?;
+    let share_phase_rows = db.share_phases(conn, round_id).await?;
+    let share_delegations = db.get_share_delegations(conn, round_id).await?;
     let share_indexes_by_vote = share_phase_rows.iter().fold(
         BTreeMap::<(u32, u32), BTreeSet<u32>>::new(),
         |mut acc, (bundle_index, proposal_id, share_index, _)| {
@@ -764,7 +769,7 @@ pub async fn resume_plan(
             acc
         },
     );
-    let intents: BTreeMap<u32, Decision> = db.ballot_intents(round_id).await?.into_iter().collect();
+    let intents: BTreeMap<u32, Decision> = db.ballot_intents(conn, round_id).await?.into_iter().collect();
 
     let bundles: Vec<u32> = delegation.keys().copied().collect();
 
@@ -1047,8 +1052,9 @@ async fn vote_has_recovery_bundle(
     bundle_index: u32,
     proposal_id: u32,
 ) -> Result<bool, VotingError> {
+    let mut conn = db.conn().await?;
     Ok(matches!(
-        db.get_commitment_bundle_recovery_fields(round_id, bundle_index, proposal_id)
+        db.get_commitment_bundle_recovery_fields(&mut conn, round_id, bundle_index, proposal_id)
             .await?,
         Some((Some(_), _))
     ))

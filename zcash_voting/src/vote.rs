@@ -395,7 +395,8 @@ pub async fn commit_batch(
     stages: &dyn crate::types::VoteCommitStageReporter,
 ) -> Result<SignedVoteCommitments, VotingError> {
     validate_draft_votes(drafts)?;
-    let bundle_count = db.get_bundle_count(round_id).await?;
+    let mut conn = db.conn().await?;
+    let bundle_count = db.get_bundle_count(&mut conn, round_id).await?;
     crate::round::validate_bundle_index(bundle_count, bundle_index, "voting")?;
 
     let mut commitments = Vec::with_capacity(drafts.len());

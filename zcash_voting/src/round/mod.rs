@@ -287,8 +287,8 @@ impl VotingDb {
     ///
     /// Returns `Ok(None)` when the round does not exist. Other database errors
     /// are returned as [`VotingError::Internal`].
-    pub async fn round(&self, round_id: &str) -> Result<Option<RoundInfo>, VotingError> {
-        let mut conn = self.conn().await?;
+    pub async fn round(&self,
+        conn: &mut SqliteConnection, round_id: &str) -> Result<Option<RoundInfo>, VotingError> {
         let wallet_id = self.wallet_id();
         let row = conn
             .query_row(
@@ -315,8 +315,8 @@ impl VotingDb {
         };
         let network = queries::network_from_storage(&network)?;
 
-        let bundle_count = queries::get_bundle_count(&mut conn, round_id, &wallet_id).await?;
-        let eligible_weight = round_eligible_weight(&mut conn, round_id, &wallet_id).await?;
+        let bundle_count = queries::get_bundle_count(conn, round_id, &wallet_id).await?;
+        let eligible_weight = round_eligible_weight(conn, round_id, &wallet_id).await?;
 
         Ok(Some(RoundInfo {
             round_id: round_id.to_string(),
@@ -330,11 +330,12 @@ impl VotingDb {
     }
 
     /// Lists all rounds for the current wallet in newest-first order.
-    pub async fn rounds(&self) -> Result<Vec<RoundInfo>, VotingError> {
-        let summaries = self.list_rounds().await?;
+    pub async fn rounds(&self,
+        conn: &mut SqliteConnection) -> Result<Vec<RoundInfo>, VotingError> {
+        let summaries = self.list_rounds(conn).await?;
         let mut rounds = Vec::with_capacity(summaries.len());
         for summary in summaries {
-            rounds.push(self.round(&summary.round_id).await?.ok_or_else(|| {
+            rounds.push(self.round(conn, &summary.round_id).await?.ok_or_else(|| {
                 VotingError::Internal {
                     message: format!("round disappeared while listing: {}", summary.round_id),
                 }
@@ -377,7 +378,8 @@ impl VotingDb {
     ) -> Result<BundleLayout, VotingError> {
         let plan = canonical_note_bundle_plan_for_notes(notes, policy)?;
         let expected_count = plan.bundles.len() as u32;
-        let existing_count = self.get_bundle_count(round_id).await?;
+        let mut conn = self.conn().await?;
+        let existing_count = self.get_bundle_count(&mut conn, round_id).await?;
 
         if existing_count == 0 {
             let (bundle_count, eligible_weight) = self.persist_bundle_plan(round_id, &plan).await?;
@@ -396,7 +398,6 @@ impl VotingDb {
             });
         }
 
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
         for (bundle_index, bundle_notes) in plan.bundles.iter().enumerate() {
             queries::require_bundle_notes(
@@ -453,7 +454,8 @@ impl VotingDb {
         policy: BundlePolicy,
     ) -> Result<BundleLayout, VotingError> {
         crate::types::validate_notes_for_round(notes)?;
-        let stored_count = self.get_bundle_count(round_id).await?;
+        let mut conn = self.conn().await?;
+        let stored_count = self.get_bundle_count(&mut conn, round_id).await?;
         if stored_count == 0 {
             return self
                 .ensure_bundles_with_policy(round_id, notes, policy)

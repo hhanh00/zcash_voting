@@ -3,6 +3,8 @@
 //! This module consolidates round-recovery reporting so wallet integrations can
 //! fetch one typed snapshot instead of querying low-level storage tables.
 
+use sqlx::SqliteConnection;
+
 use crate::{
     phases::{DelegationPhase, SharePhase, VotePhase, WorkflowPhase},
     round::VotingDb,
@@ -85,15 +87,16 @@ pub struct RoundRecoverySnapshot {
 /// has already been recorded; otherwise it returns `None`.
 pub async fn recoverable_commitment_bundle(
     db: &VotingDb,
+    conn: &mut SqliteConnection,
     round_id: &str,
     bundle_index: u32,
     proposal_id: u32,
 ) -> Result<Option<RecoverableCommitmentBundle>, VotingError> {
     let fields = db
-        .get_commitment_bundle_recovery_fields(round_id, bundle_index, proposal_id)
+        .get_commitment_bundle_recovery_fields(conn, round_id, bundle_index, proposal_id)
         .await?;
     let has_vote_tx_hash = db
-        .get_vote_tx_hash(round_id, bundle_index, proposal_id)
+        .get_vote_tx_hash(conn, round_id, bundle_index, proposal_id)
         .await?
         .is_some();
 
@@ -125,33 +128,34 @@ pub async fn recoverable_commitment_bundle(
 /// Loads the full recovery snapshot for one round.
 pub async fn round_snapshot(
     db: &VotingDb,
+    conn: &mut SqliteConnection,
     round_id: &str,
 ) -> Result<RoundRecoverySnapshot, VotingError> {
-    let bundle_count = db.get_bundle_count(round_id).await?;
-    let vote_rows = db.get_votes(round_id).await?;
+    let bundle_count = db.get_bundle_count(conn, round_id).await?;
+    let vote_rows = db.get_votes(conn, round_id).await?;
 
-    let votes = build_vote_recovery_rows(db, round_id, &vote_rows).await?;
+    let votes = build_vote_recovery_rows(db, conn, round_id, &vote_rows).await?;
     let mut commitment_bundles = Vec::new();
     for vote in &votes {
         if let Some(bundle) =
-            recoverable_commitment_bundle(db, round_id, vote.bundle_index, vote.proposal_id).await?
+            recoverable_commitment_bundle(db, conn, round_id, vote.bundle_index, vote.proposal_id).await?
         {
             commitment_bundles.push(bundle);
         }
     }
 
     let mut delegation = Vec::new();
-    for (bundle_index, phase) in db.delegation_phases(round_id).await? {
+    for (bundle_index, phase) in db.delegation_phases(conn, round_id).await? {
         delegation.push(DelegationRecovery {
             bundle_index,
             phase,
-            tx_hash: db.get_delegation_tx_hash(round_id, bundle_index).await?,
-            van_leaf_position: db.load_van_position(round_id, bundle_index).await.ok(),
+            tx_hash: db.get_delegation_tx_hash(conn, round_id, bundle_index).await?,
+            van_leaf_position: db.load_van_position(conn, round_id, bundle_index).await.ok(),
         });
     }
 
     let shares = db
-        .share_phases(round_id)
+        .share_phases(conn, round_id)
         .await?
         .into_iter()
         .map(
@@ -187,6 +191,7 @@ pub async fn clear(db: &VotingDb, round_id: &str) -> Result<(), VotingError> {
 
 async fn build_vote_recovery_rows(
     db: &VotingDb,
+    conn: &mut SqliteConnection,
     round_id: &str,
     vote_rows: &[VoteRecord],
 ) -> Result<Vec<VoteRecovery>, VotingError> {
@@ -198,12 +203,12 @@ async fn build_vote_recovery_rows(
         .collect::<BTreeMap<_, _>>();
 
     let mut result = Vec::new();
-    for (bundle_index, proposal_id, phase) in db.vote_phases(round_id).await? {
+    for (bundle_index, proposal_id, phase) in db.vote_phases(conn, round_id).await? {
         let tx_hash = db
-            .get_vote_tx_hash(round_id, bundle_index, proposal_id)
+            .get_vote_tx_hash(conn, round_id, bundle_index, proposal_id)
             .await?;
         let fields = db
-            .get_commitment_bundle_recovery_fields(round_id, bundle_index, proposal_id)
+            .get_commitment_bundle_recovery_fields(conn, round_id, bundle_index, proposal_id)
             .await?;
         let (has_commitment_bundle, vc_tree_position) = match fields {
             Some((bundle_json, position)) => {
