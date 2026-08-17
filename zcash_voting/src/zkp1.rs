@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use sha2::{Digest, Sha256};
+
 use ff::PrimeField;
 use halo2_proofs::{
     pasta::EqAffine,
@@ -312,6 +314,180 @@ fn delegation_cached_keys_large_stack() -> Result<&'static DelegationKeys, Votin
         .map_err(|_| VotingError::Internal {
             message: "delegation key cache thread panicked".to_string(),
         })?
+}
+
+/// Deterministic circuit-layout fingerprint of the delegation verifying key
+/// (a hash of the Debug content: domain, commitments, permutation, constraint
+/// system). Used to detect dependency-induced circuit drift — the chain's
+/// verifier rejects proofs whose circuit layout differs from its own.
+pub fn delegation_circuit_fingerprint() -> String {
+    let (params, _pk, vk) = delegation_cached_keys().expect("delegation keygen");
+    let fp = format!("k={} vk={:?}", params.k(), vk);
+    let digest = sha2::Sha256::digest(fp.as_bytes());
+    digest.iter().take(16).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Generates a delegation proof with fully deterministic fixtures (seeded
+/// RNG, 5 real notes filling every slot, in-memory Merkle tree, IMT via the
+/// spaced-leaf provider — no PIR server) and returns the proof size plus
+/// sha256 fingerprints of the proof bytes and public inputs.
+///
+/// Run this from the fork workspace AND from the app workspace (which
+/// compiles the fork against patched deps) and compare: identical hashes
+/// mean the proof serialization is byte-identical across dependency sets.
+pub fn delegation_proof_probe() -> (usize, String, String) {
+    use ff::Field;
+    use incrementalmerkletree::{Hashable, Level};
+    use orchard::{
+        keys::Scope,
+        note::{commitment::ExtractedNoteCommitment, Rho},
+        tree::MerkleHashOrchard,
+        value::NoteValue,
+        NOTE_COMMITMENT_TREE_DEPTH as TREE_DEPTH,
+    };
+    use rand::{rngs::StdRng, RngCore, SeedableRng};
+    use zcash_keys::keys::UnifiedSpendingKey;
+    use zcash_protocol::consensus::MAIN_NETWORK;
+    use zip32::AccountId;
+
+    let mut rng = StdRng::seed_from_u64(42);
+    let seed = [0x42u8; 32];
+    let account = AccountId::try_from(0u32).unwrap();
+    let usk = UnifiedSpendingKey::from_seed(&MAIN_NETWORK, &seed, account).unwrap();
+    let ufvk = usk.to_unified_full_viewing_key();
+    let ufvk_str = ufvk.encode(&MAIN_NETWORK);
+    let fvk = ufvk.orchard().unwrap().clone();
+
+    let hotkey_seed = [0x43u8; 32];
+    let hotkey_usk =
+        UnifiedSpendingKey::from_seed(&MAIN_NETWORK, &hotkey_seed, account).unwrap();
+    let hotkey_fvk = hotkey_usk
+        .to_unified_full_viewing_key()
+        .orchard()
+        .unwrap()
+        .clone();
+    let hotkey_addr = hotkey_fvk.address_at(0u32, Scope::External);
+    let hotkey_raw_address = hotkey_addr.to_raw_address_bytes().to_vec();
+
+    let note_values = vec![
+        (crate::governance::BALLOT_DIVISOR / BUNDLE_NOTE_SLOTS as u64) + 1;
+        BUNDLE_NOTE_SLOTS
+    ];
+    let address = fvk.address_at(0u32, Scope::External);
+    let mut notes = Vec::new();
+    for &v in &note_values {
+        let (_, _, dummy_parent) = orchard::Note::dummy(&mut rng, None, orchard::note::NoteVersion::V3);
+        let note = orchard::Note::new(
+            address,
+            NoteValue::from_raw(v),
+            Rho::from_nf_old(dummy_parent.nullifier(&fvk)),
+            orchard::note::NoteVersion::V3,
+            &mut rng,
+        );
+        notes.push(note);
+    }
+
+    let empty_leaf = MerkleHashOrchard::empty_leaf();
+    let mut leaves = [empty_leaf; 8];
+    for (i, note) in notes.iter().enumerate() {
+        let cmx = ExtractedNoteCommitment::from(note.commitment());
+        leaves[i] = MerkleHashOrchard::from_cmx(&cmx);
+    }
+    let l1_0 = MerkleHashOrchard::combine(Level::from(0), &leaves[0], &leaves[1]);
+    let l1_1 = MerkleHashOrchard::combine(Level::from(0), &leaves[2], &leaves[3]);
+    let l1_2 = MerkleHashOrchard::combine(Level::from(0), &leaves[4], &leaves[5]);
+    let l1_3 = MerkleHashOrchard::combine(Level::from(0), &leaves[6], &leaves[7]);
+    let l2_0 = MerkleHashOrchard::combine(Level::from(1), &l1_0, &l1_1);
+    let l2_1 = MerkleHashOrchard::combine(Level::from(1), &l1_2, &l1_3);
+    let l3_0 = MerkleHashOrchard::combine(Level::from(2), &l2_0, &l2_1);
+    let mut current = l3_0;
+    for level in 3..TREE_DEPTH {
+        let sibling = MerkleHashOrchard::empty_root(Level::from(level as u8));
+        current = MerkleHashOrchard::combine(Level::from(level as u8), &current, &sibling);
+    }
+    let nc_root_bytes = current.to_bytes().to_vec();
+
+    let l1 = [l1_0, l1_1, l1_2, l1_3];
+    let l2 = [l2_0, l2_1];
+    let mut merkle_witnesses = Vec::new();
+    for (i, note) in notes.iter().enumerate() {
+        let mut auth_path_hashes = [MerkleHashOrchard::empty_leaf(); TREE_DEPTH];
+        auth_path_hashes[0] = leaves[i ^ 1];
+        auth_path_hashes[1] = l1[(i >> 1) ^ 1];
+        auth_path_hashes[2] = l2[(i >> 2) ^ 1];
+        for level in 3..TREE_DEPTH {
+            auth_path_hashes[level] = MerkleHashOrchard::empty_root(Level::from(level as u8));
+        }
+        let cmx = ExtractedNoteCommitment::from(note.commitment());
+        merkle_witnesses.push(crate::types::WitnessData {
+            note_commitment: MerkleHashOrchard::from_cmx(&cmx).to_bytes().to_vec(),
+            position: i as u64,
+            root: nc_root_bytes.clone(),
+            auth_path: auth_path_hashes
+                .iter()
+                .map(|h| h.to_bytes().to_vec())
+                .collect(),
+        });
+    }
+
+    let imt = voting_circuits::delegation::SpacedLeafImtProvider::new();
+    let imt_proofs: Vec<voting_circuits::delegation::ImtProofData> = notes
+        .iter()
+        .map(|note| {
+            let nf_bytes = note.nullifier(&fvk).to_bytes();
+            let nf_base: pallas::Base = pallas::Base::from_repr(nf_bytes).unwrap();
+            imt.non_membership_proof(nf_base).unwrap()
+        })
+        .collect();
+
+    let full_notes: Vec<crate::types::NoteInfo> = notes
+        .iter()
+        .enumerate()
+        .map(|(i, note)| {
+            let cmx: ExtractedNoteCommitment = note.commitment().into();
+            crate::types::NoteInfo {
+                commitment: cmx.to_bytes().to_vec(),
+                diversifier: note.recipient().diversifier().as_array().to_vec(),
+                value: note_values[i],
+                rho: note.rho().to_bytes().to_vec(),
+                rseed: note.rseed().as_bytes().to_vec(),
+                nullifier: note.nullifier(&fvk).to_bytes().to_vec(),
+                position: i as u64,
+                scope: 0,
+                ufvk_str: ufvk_str.clone(),
+            }
+        })
+        .collect();
+
+    let alpha = pallas::Scalar::random(&mut rng);
+    let van_comm_rand = pallas::Base::random(&mut rng);
+    let vote_round_id = pallas::Base::random(&mut rng);
+    let reporter = crate::types::NoopProgressReporter;
+
+    let result = build_and_prove_delegation(
+        &full_notes,
+        &hotkey_raw_address,
+        &alpha.to_repr(),
+        &van_comm_rand.to_repr(),
+        &vote_round_id.to_repr(),
+        &merkle_witnesses,
+        &imt_proofs,
+        &[],
+        Network::Mainnet,
+        &reporter,
+        None,
+    )
+    .expect("build_and_prove_delegation");
+
+    let proof_hash = sha2::Sha256::digest(&result.proof);
+    let proof_hex: String = proof_hash.iter().take(16).map(|b| format!("{b:02x}")).collect();
+    let pi_hash = sha2::Sha256::digest(result.public_inputs.concat());
+    let pi_hex: String = pi_hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    for (i, pi) in result.public_inputs.iter().enumerate() {
+        let hex: String = pi.iter().take(8).map(|b| format!("{b:02x}")).collect();
+        println!("public_input[{i}]: {hex}");
+    }
+    (result.proof.len(), proof_hex, pi_hex)
 }
 
 /// Build and prove the delegation ZKP (#1).
