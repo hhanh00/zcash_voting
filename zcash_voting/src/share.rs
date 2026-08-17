@@ -13,6 +13,7 @@ use crate::{
 };
 use ff::PrimeField;
 use pasta_curves::pallas;
+use sqlx::SqliteConnection;
 
 pub use crate::types::ShareDelegationRecord as ShareRecord;
 
@@ -100,18 +101,19 @@ pub async fn record(
 /// Lists all helper-share records for a round.
 pub async fn list(
     db: &VotingDb,
+    conn: &mut SqliteConnection,
     round_id: &str,
 ) -> Result<Vec<ShareDelegationRecord>, VotingError> {
-    let mut conn = db.conn().await?;
-    db.get_share_delegations(&mut conn, round_id).await
+    db.get_share_delegations(conn, round_id).await
 }
 
 /// Lists unconfirmed helper-share records for retry and polling.
 pub async fn unconfirmed(
     db: &VotingDb,
+    conn: &mut SqliteConnection,
     round_id: &str,
 ) -> Result<Vec<ShareDelegationRecord>, VotingError> {
-    db.get_unconfirmed_delegations(round_id).await
+    db.get_unconfirmed_delegations(conn, round_id).await
 }
 
 /// Marks one helper-share record confirmed.

@@ -1465,13 +1465,13 @@ impl VotingDb {
 
     pub async fn get_commitment_bundle(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
         bundle_index: u32,
         proposal_id: u32,
     ) -> Result<Option<(String, u64)>, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_commitment_bundle(&mut conn, round_id, &wallet_id, bundle_index, proposal_id)
+        queries::get_commitment_bundle(conn, round_id, &wallet_id, bundle_index, proposal_id)
             .await
     }
 
@@ -1598,11 +1598,11 @@ impl VotingDb {
     /// Load only unconfirmed share delegations for a round.
     pub async fn get_unconfirmed_delegations(
         &self,
+        conn: &mut SqliteConnection,
         round_id: &str,
     ) -> Result<Vec<crate::ShareDelegationRecord>, VotingError> {
-        let mut conn = self.conn().await?;
         let wallet_id = self.wallet_id();
-        queries::get_unconfirmed_delegations(&mut conn, round_id, &wallet_id).await
+        queries::get_unconfirmed_delegations(conn, round_id, &wallet_id).await
     }
 
     /// Mark a share delegation as confirmed on-chain.

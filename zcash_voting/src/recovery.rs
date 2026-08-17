@@ -175,8 +175,8 @@ pub async fn round_snapshot(
         votes,
         commitment_bundles,
         shares,
-        share_delegations: share::list(db, round_id).await?,
-        unconfirmed_share_delegations: share::unconfirmed(db, round_id).await?,
+        share_delegations: share::list(db, conn, round_id).await?,
+        unconfirmed_share_delegations: share::unconfirmed(db, conn, round_id).await?,
     })
 }
 

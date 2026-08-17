@@ -456,16 +456,16 @@ fn missing_recovery_field(message: String) -> VotingError {
 
 async fn delegation_statuses(
     db: &VotingDb,
+    conn: &mut SqliteConnection,
     round_id: &str,
     delegation: &BTreeMap<u32, DelegationPhase>,
 ) -> Result<Vec<DelegationStatus>, VotingError> {
-    let mut conn = db.conn().await?;
     let mut result = Vec::with_capacity(delegation.len());
     for (&bundle_index, &phase) in delegation {
         result.push(DelegationStatus {
             bundle_index,
             phase,
-            tx_hash: db.get_delegation_tx_hash(&mut conn, round_id, bundle_index).await?,
+            tx_hash: db.get_delegation_tx_hash(conn, round_id, bundle_index).await?,
         });
     }
     Ok(result)
@@ -473,6 +473,7 @@ async fn delegation_statuses(
 
 async fn recovered_delegation_work_from_steps(
     db: &VotingDb,
+    conn: &mut SqliteConnection,
     round_id: &str,
     delegation: &BTreeMap<u32, DelegationPhase>,
     steps: &[NextStep],
@@ -499,9 +500,8 @@ async fn recovered_delegation_work_from_steps(
                         "poll delegation step missing phase for round={round_id}, bundle={bundle_index}"
                     ))
                 })?;
-                let mut conn = db.conn().await?;
                 let tx_hash = db
-                    .get_delegation_tx_hash(&mut conn, round_id, bundle_index)
+                    .get_delegation_tx_hash(conn, round_id, bundle_index)
                     .await?
                     .ok_or_else(|| {
                         missing_recovery_field(format!(
@@ -523,6 +523,7 @@ async fn recovered_delegation_work_from_steps(
 
 async fn recovered_vote_work_from_steps(
     db: &VotingDb,
+    conn: &mut SqliteConnection,
     round_id: &str,
     blocking_confirm_share_keys: &BTreeSet<(u32, u32, u32)>,
     steps: &[NextStep],
@@ -555,9 +556,8 @@ async fn recovered_vote_work_from_steps(
                 bundle_index,
                 proposal_id,
             } => {
-                let mut conn = db.conn().await?;
                 let tx_hash = db
-                    .get_vote_tx_hash(&mut conn, round_id, bundle_index, proposal_id)
+                    .get_vote_tx_hash(conn, round_id, bundle_index, proposal_id)
                     .await?
                     .ok_or_else(|| {
                         missing_recovery_field(format!(
@@ -580,6 +580,7 @@ async fn recovered_vote_work_from_steps(
             } => {
                 push_submit_share_work(
                     db,
+                    conn,
                     round_id,
                     &mut work,
                     bundle_index,
@@ -600,6 +601,7 @@ async fn recovered_vote_work_from_steps(
             {
                 push_submit_share_work(
                     db,
+                    conn,
                     round_id,
                     &mut work,
                     bundle_index,
@@ -616,6 +618,7 @@ async fn recovered_vote_work_from_steps(
 
 async fn push_submit_share_work(
     db: &VotingDb,
+    conn: &mut SqliteConnection,
     round_id: &str,
     work: &mut Vec<VoteRecoveryWork>,
     bundle_index: u32,
@@ -634,7 +637,7 @@ async fn push_submit_share_work(
     }
 
     let vc_tree_position = db
-        .get_commitment_bundle(round_id, bundle_index, proposal_id)
+        .get_commitment_bundle(conn, round_id, bundle_index, proposal_id)
         .await?
         .map(|(_, position)| position)
         .ok_or_else(|| {
@@ -868,7 +871,7 @@ pub async fn resume_plan(
                     });
                 }
                 Some(VotePhase::Submitted) => {
-                    if !vote_has_recovery_bundle(db, round_id, b, pid).await? {
+                    if !vote_has_recovery_bundle(db, conn, round_id, b, pid).await? {
                         return Err(VotingError::InvalidInput {
                             message: format!(
                                 "round {round_id} bundle {b} proposal {pid} has a submitted vote without recovery material"
@@ -941,7 +944,7 @@ pub async fn resume_plan(
         })
         .collect::<BTreeSet<_>>();
     let blocking_confirm_share_keys = db
-        .get_unconfirmed_delegations(round_id)
+        .get_unconfirmed_delegations(conn, round_id)
         .await?
         .into_iter()
         .filter(|share| share.sent_to_urls.is_empty())
@@ -964,7 +967,7 @@ pub async fn resume_plan(
         _ => true,
     });
 
-    let delegation_statuses = delegation_statuses(db, round_id, &delegation).await?;
+    let delegation_statuses = delegation_statuses(db, conn, round_id, &delegation).await?;
     let hotkey_bound = delegation
         .values()
         .any(|phase| *phase != DelegationPhase::Prepared)
@@ -1022,9 +1025,9 @@ pub async fn resume_plan(
         completed_for_display,
     );
     let recovered_delegation_work =
-        recovered_delegation_work_from_steps(db, round_id, &delegation, &steps).await?;
+        recovered_delegation_work_from_steps(db, conn, round_id, &delegation, &steps).await?;
     let recovered_vote_work =
-        recovered_vote_work_from_steps(db, round_id, &blocking_confirm_share_keys, &steps).await?;
+        recovered_vote_work_from_steps(db, conn, round_id, &blocking_confirm_share_keys, &steps).await?;
 
     Ok(RoundPlan {
         round_id: round_id.to_string(),
@@ -1048,13 +1051,13 @@ pub async fn resume_plan(
 
 async fn vote_has_recovery_bundle(
     db: &VotingDb,
+    conn: &mut SqliteConnection,
     round_id: &str,
     bundle_index: u32,
     proposal_id: u32,
 ) -> Result<bool, VotingError> {
-    let mut conn = db.conn().await?;
     Ok(matches!(
-        db.get_commitment_bundle_recovery_fields(&mut conn, round_id, bundle_index, proposal_id)
+        db.get_commitment_bundle_recovery_fields(conn, round_id, bundle_index, proposal_id)
             .await?,
         Some((Some(_), _))
     ))
