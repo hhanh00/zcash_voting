@@ -11,18 +11,39 @@ resolver = "2"
 # orchard, voting-circuits, and librustzcash all resolve to the same Orchard
 # release, keeping the dependency graph type-compatible across PCZT construction
 # and vote proofs.
-orchard = { version = "0.15", features = ["unstable-voting-circuits"] }
+orchard = { version = "0.15", features = ["unstable-voting-circuits", "unstable-frost"] }
 voting-circuits = "=0.10.0"
 
 # These published librustzcash versions include the Ironwood historical selector.
-pczt = { version = "0.9.1", features = ["orchard", "io-finalizer", "signer", "zcp-builder"] }
+pczt = { version = "0.9.1", features = ["zcp-builder", "io-finalizer", "prover", "signer", "spend-finalizer", "tx-extractor", "transparent", "sapling", "orchard", "zip-233", "zsa"] }
 zcash_client_backend = { version = "0.24.0-rc.3", default-features = false, features = ["orchard", "lightwalletd-tonic", "lightwalletd-tonic-tls-webpki-roots"] }
-zcash_keys = { version = "0.16.0", features = ["orchard"] }
-zcash_primitives = { version = "0.30.0" }
-zcash_protocol = { version = "0.10.0" }
+zcash_keys = { version = "0.16.0", features = ["sapling", "orchard", "transparent-inputs"] }
+zcash_primitives = { version = "0.30.0", features = ["transparent-inputs", "zsa"] }
+zcash_protocol = { version = "0.10.0", features = ["local-consensus"] }
 
 # Patched pir-client: the async PirClient lacks a public circuit_root
 # accessor (private field); hosts genericizing over a PIR proof source need
 # one. Branch feat/async-circuit-root-getter.
 [patch.crates-io]
 pir-client = { git = "https://github.com/hhanh00/vote-nullifier-pir.git", rev = "b704640df339a98330a5b8e4582144fde67d0b0c" }
+jwt-simple = { git = "https://github.com/rachyandco/rust-jwt-simple", rev = "e8177eab707d27d7ea94b6799204e48e11b65e19" }
+orchard = { git = "https://github.com/zcash-shielded-assets/orchard.git", rev = "4cf06bc19e52d1e8e43438cdbdd703ac2565bff6" }
+sapling-crypto = { git = "https://github.com/zcash-shielded-assets/sapling-crypto", rev = "4c47c84845436aa1b650bd5367ed4de67421cc0d" }
+zcash_note_encryption = { git = "https://github.com/zcash-shielded-assets/zcash_note_encryption", rev = "bc7a9370e1a7253cf496f24aa0bd4d0e49c3977e" }
+pczt = { git = "https://github.com/zcash-shielded-assets/librustzcash", rev = "3cac2d7ff169c213fcb1ca76f02fb82cc8d87265" }
+zcash_client_backend = { git = "https://github.com/zcash-shielded-assets/librustzcash", rev = "3cac2d7ff169c213fcb1ca76f02fb82cc8d87265" }
+zcash_address = { git = "https://github.com/zcash-shielded-assets/librustzcash", rev = "3cac2d7ff169c213fcb1ca76f02fb82cc8d87265" }
+zcash_encoding = { git = "https://github.com/zcash-shielded-assets/librustzcash", rev = "3cac2d7ff169c213fcb1ca76f02fb82cc8d87265" }
+zcash_keys = { git = "https://github.com/zcash-shielded-assets/librustzcash", rev = "3cac2d7ff169c213fcb1ca76f02fb82cc8d87265" }
+zcash_primitives = { git = "https://github.com/zcash-shielded-assets/librustzcash", rev = "3cac2d7ff169c213fcb1ca76f02fb82cc8d87265" }
+zcash_proofs = { git = "https://github.com/zcash-shielded-assets/librustzcash", rev = "3cac2d7ff169c213fcb1ca76f02fb82cc8d87265" }
+zcash_protocol = { git = "https://github.com/zcash-shielded-assets/librustzcash", rev = "3cac2d7ff169c213fcb1ca76f02fb82cc8d87265" }
+zcash_transparent = { git = "https://github.com/zcash-shielded-assets/librustzcash", rev = "3cac2d7ff169c213fcb1ca76f02fb82cc8d87265" }
+zip321 = { git = "https://github.com/zcash-shielded-assets/librustzcash", rev = "3cac2d7ff169c213fcb1ca76f02fb82cc8d87265" }
+reddsa = { git = "https://github.com/ZcashFoundation/reddsa.git", rev = "975f9ca835c4b9196c81608e55192b0f711e951d" }
+sinsemilla = { git = "https://github.com/zcash/sinsemilla", rev = "aabb707e862bc3d7b803c77d14e5a771bcee3e8c" }
+zcash_spec = { git = "https://github.com/zcash-shielded-assets/zcash_spec", rev = "d5e84264d2ad0646b587a837f4e2424ca64d3a05" }
+halo2_gadgets = { git = "https://github.com/zcash-shielded-assets/halo2", rev = "dcdbd1df2b30fd8d709c1a7c4ad9c4e091789d00" }
+halo2_proofs = { git = "https://github.com/zcash-shielded-assets/halo2", rev = "dcdbd1df2b30fd8d709c1a7c4ad9c4e091789d00" }
+halo2_poseidon = { git = "https://github.com/zcash-shielded-assets/halo2", rev = "dcdbd1df2b30fd8d709c1a7c4ad9c4e091789d00" }
+voting-circuits = { git = "https://github.com/hhanh00/voting-circuits.git", rev = "44033690874bc8b92cf015426d785b0b2e107035" }

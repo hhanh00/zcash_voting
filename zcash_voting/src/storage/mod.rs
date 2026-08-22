@@ -206,7 +206,7 @@ mod sqlx_tests {
             .await
             .unwrap()
             .get(0);
-        assert_eq!(version, 13);
+        assert_eq!(version, 14);
         drop(conn);
 
         db.init_round(Network::Testnet, &params(), Some(r#"{"source":"test"}"#))

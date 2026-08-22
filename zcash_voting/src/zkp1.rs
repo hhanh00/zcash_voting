@@ -12,7 +12,7 @@ use halo2_proofs::{
 use incrementalmerkletree::Hashable;
 use orchard::{
     keys::{Diversifier, FullViewingKey, Scope, SpendValidatingKey},
-    note::{ExtractedNoteCommitment, NoteVersion, RandomSeed, Rho},
+    note::{AssetBase, ExtractedNoteCommitment, NoteVersion, RandomSeed, Rho},
     tree::{MerkleHashOrchard, MerklePath},
     value::NoteValue,
     NOTE_COMMITMENT_TREE_DEPTH,
@@ -879,6 +879,7 @@ mod tests {
             if let Some(note) = Option::<orchard::Note>::from(orchard::Note::from_parts(
                 address,
                 NoteValue::from_raw(value),
+                AssetBase::zatoshi(),
                 rho,
                 rseed,
                 version,
@@ -924,6 +925,7 @@ mod tests {
         orchard::Note::from_parts(
             address,
             NoteValue::from_raw(full_note.value),
+            AssetBase::zatoshi(),
             rho,
             rseed,
             version,

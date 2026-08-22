@@ -992,7 +992,8 @@ mod tests {
         assert!(pczt.ironwood().anchor().is_none());
         let governance_action = pczt
             .ironwood()
-            .sole_action()
+            .actions()
+            .first()
             .expect("the Ironwood bundle has one action");
         assert!(governance_action.spend().witness().is_none());
         let output = governance_action.output();
@@ -1157,9 +1158,12 @@ mod tests {
                     epk_bytes: result.tx1_effects[start + 128..start + 160]
                         .try_into()
                         .unwrap(),
-                    enc_ciphertext: result.tx1_effects[start + 160..start + 740]
-                        .try_into()
-                        .unwrap(),
+                    enc_ciphertext: {
+                        let bytes: [u8; 580] = result.tx1_effects[start + 160..start + 740]
+                            .try_into()
+                            .unwrap();
+                        zcash_note_encryption::note_bytes::NoteBytesData(bytes)
+                    },
                     out_ciphertext: result.tx1_effects[start + 740..start + 820]
                         .try_into()
                         .unwrap(),
