@@ -192,6 +192,126 @@ async fn record_vote_confirmation(
     })
 }
 
+/// Confirmation evidence recovered from a commitment-tree scan rather than
+/// from tx events (used when the tx hash is unknown — e.g. the chain spent the
+/// vote's nullifier but the client never learned the hash).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TreeVoteConfirmation {
+    /// Confirmed vote commitment tree position.
+    pub vc_tree_position: u64,
+    /// Confirmed vote-authority-note leaf position, when the scan also located
+    /// the cast-vote VAN output commitment.
+    pub van_leaf_position: Option<u32>,
+}
+
+/// Records a cast-vote confirmation whose evidence came from a commitment-tree
+/// scan instead of tx events, so no tx hash is available. Sets
+/// `confirmed_without_hash` so phase derivation still reports Confirmed.
+///
+/// The VC position is recorded with the same conflict checks as the event
+/// path; the bundle's VAN pointer advances only when `van_leaf_position` is
+/// known, with the same never-rewind semantics as event confirmations.
+///
+/// # Errors
+///
+/// Returns an error when the vote or bundle row is missing, the recovery
+/// bundle is absent, the VC position conflicts with a stored one, or the DB
+/// transaction cannot commit.
+pub async fn record_vote_confirmation_from_tree(
+    db: &VotingDb,
+    round_id: &str,
+    bundle_index: u32,
+    proposal_id: u32,
+    vc_tree_position: u64,
+    van_leaf_position: Option<u32>,
+) -> Result<TreeVoteConfirmation, VotingError> {
+    let mut conn = db.conn().await?;
+    let wallet_id = db.wallet_id();
+    let mut tx = conn.begin().await.map_err(|e| VotingError::Internal {
+        message: format!("tree vote confirmation transaction failed: {e}"),
+    })?;
+
+    require_vote_recovery_json(&mut tx, round_id, &wallet_id, bundle_index, proposal_id).await?;
+    crate::vote::record_vc_position_with_conn(
+        &mut tx,
+        &wallet_id,
+        round_id,
+        bundle_index,
+        proposal_id,
+        vc_tree_position,
+    )
+    .await?;
+    if let Some(van_leaf_position) = van_leaf_position {
+        advance_van_position_in_tx(
+            &mut tx,
+            round_id,
+            &wallet_id,
+            bundle_index,
+            van_leaf_position,
+        )
+        .await?;
+    }
+    sqlx::query(
+        "UPDATE voting_votes SET confirmed_without_hash = 1
+         WHERE round_id = ? AND wallet_id = ?
+           AND bundle_index = ? AND proposal_id = ?",
+    )
+    .bind(round_id)
+    .bind(&wallet_id)
+    .bind(bundle_index as i64)
+    .bind(proposal_id as i64)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| VotingError::Internal {
+        message: format!("failed to mark vote confirmed without hash: {e}"),
+    })?;
+
+    tx.commit().await.map_err(|e| VotingError::Internal {
+        message: format!("commit tree vote confirmation transaction failed: {e}"),
+    })?;
+    Ok(TreeVoteConfirmation {
+        vc_tree_position,
+        van_leaf_position,
+    })
+}
+
+/// Records a delegation confirmation recovered from a commitment-tree scan
+/// (tx hash unknown). Stores the VAN leaf position unless a later
+/// confirmation already advanced the pointer further (never rewind).
+///
+/// # Errors
+///
+/// Returns an error when the bundle row is missing, the stored VAN position
+/// conflicts with the recovered one, or the DB transaction cannot commit.
+pub async fn record_delegation_confirmation_from_tree(
+    db: &VotingDb,
+    round_id: &str,
+    bundle_index: u32,
+    van_leaf_position: u32,
+) -> Result<(), VotingError> {
+    let mut conn = db.conn().await?;
+    let wallet_id = db.wallet_id();
+    let mut tx = conn.begin().await.map_err(|e| VotingError::Internal {
+        message: format!("tree delegation confirmation transaction failed: {e}"),
+    })?;
+
+    let (_, stored_van_position) =
+        load_bundle_confirmation_fields(&mut tx, round_id, &wallet_id, bundle_index).await?;
+    if delegation_van_position_should_update(stored_van_position, van_leaf_position)? {
+        queries::store_van_position(
+            &mut tx,
+            round_id,
+            &wallet_id,
+            bundle_index,
+            van_leaf_position,
+        )
+        .await?;
+    }
+    tx.commit().await.map_err(|e| VotingError::Internal {
+        message: format!("commit tree delegation confirmation transaction failed: {e}"),
+    })
+}
+
 async fn require_vote_recovery_json(
     conn: &mut SqliteConnection,
     round_id: &str,

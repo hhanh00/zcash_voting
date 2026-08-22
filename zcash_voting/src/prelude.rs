@@ -5,7 +5,8 @@
 //! needed by mobile SDK boundaries without exposing proof-circuit internals.
 
 pub use crate::confirmation::{
-    confirm_delegation_submission, confirm_vote_submission, DelegationConfirmation, TxEvent,
+    confirm_delegation_submission, confirm_vote_submission, record_delegation_confirmation_from_tree,
+    record_vote_confirmation_from_tree, DelegationConfirmation, TreeVoteConfirmation, TxEvent,
     TxEventAttribute, VoteConfirmation,
 };
 pub use crate::delegate::gather_delegation_lwd_inputs;
@@ -86,4 +87,8 @@ pub use crate::precompute::delegation_pir;
 
 pub use crate::precompute::{
     reset_vote_tree, reset_voting_session_state, sync_vote_tree, van_witness,
+};
+
+pub use crate::tree_sync::{
+    delegation_van_commitment, find_leaf_position, find_leaf_position_with_api,
 };

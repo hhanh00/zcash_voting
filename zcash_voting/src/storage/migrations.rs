@@ -6,7 +6,7 @@ use crate::VotingError;
 /// Current voting schema version, tracked in the `voting_schema_version`
 /// table rather than `PRAGMA user_version` so the voting schema can share a
 /// database with a host wallet without claiming its version pragma.
-const CURRENT_VERSION: u32 = 13;
+const CURRENT_VERSION: u32 = 14;
 
 const INIT_SQL: &str = include_str!("migrations/001_init.sql");
 

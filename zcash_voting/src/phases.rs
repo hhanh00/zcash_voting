@@ -266,7 +266,7 @@ impl VotingDb {
         let phase = conn
             .query_row(
                 "SELECT tx_hash IS NOT NULL, vc_tree_position IS NOT NULL,
-                        commitment_bundle_json IS NOT NULL
+                        commitment_bundle_json IS NOT NULL, confirmed_without_hash != 0
                  FROM voting_votes
                  WHERE round_id = :round_id
                    AND wallet_id = :wallet_id
@@ -283,6 +283,7 @@ impl VotingDb {
                         row.get::<_, i64>(0)? != 0,
                         row.get::<_, i64>(1)? != 0,
                         row.get::<_, i64>(2)? != 0,
+                        row.get::<_, i64>(3)? != 0,
                     ))
                 },
             )
@@ -309,7 +310,8 @@ impl VotingDb {
         let mut stmt = conn
             .prepare(
                 "SELECT bundle_index, proposal_id, tx_hash IS NOT NULL,
-                        vc_tree_position IS NOT NULL, commitment_bundle_json IS NOT NULL
+                        vc_tree_position IS NOT NULL, commitment_bundle_json IS NOT NULL,
+                        confirmed_without_hash != 0
                  FROM voting_votes
                  WHERE round_id = :round_id AND wallet_id = :wallet_id
                  ORDER BY bundle_index, proposal_id",
@@ -329,6 +331,7 @@ impl VotingDb {
                             row.get::<_, i64>(2)? != 0,
                             row.get::<_, i64>(3)? != 0,
                             row.get::<_, i64>(4)? != 0,
+                            row.get::<_, i64>(5)? != 0,
                         ),
                     ))
                 },
@@ -691,8 +694,9 @@ fn vote_phase_from_columns(
     has_tx_hash: bool,
     has_vc_position: bool,
     has_recovery_bundle: bool,
+    confirmed_without_hash: bool,
 ) -> VotePhase {
-    if has_tx_hash && has_vc_position && has_recovery_bundle {
+    if (has_tx_hash || confirmed_without_hash) && has_vc_position && has_recovery_bundle {
         VotePhase::Confirmed
     } else if has_tx_hash {
         VotePhase::Submitted

@@ -109,6 +109,11 @@ CREATE TABLE IF NOT EXISTS voting_votes (
     FOREIGN KEY (round_id, wallet_id, bundle_index) REFERENCES voting_bundles(round_id, wallet_id, bundle_index) ON DELETE CASCADE
 );
 
+-- v14: votes confirmed via commitment-tree evidence may lack a tx hash.
+-- Not idempotent on its own; migrate() runs this batch exactly once per
+-- version bump (fresh and upgrade paths both create the table first).
+ALTER TABLE voting_votes ADD COLUMN confirmed_without_hash INTEGER NOT NULL DEFAULT 0;
+
 CREATE TABLE IF NOT EXISTS voting_share_delegations (
     round_id        TEXT NOT NULL,
     wallet_id       TEXT NOT NULL DEFAULT '',

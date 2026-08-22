@@ -1516,6 +1516,42 @@ pub(crate) async fn load_van_tree_entries(
         .collect()
 }
 
+/// Loads the delegation VAN commitment (`gov_comm`) for one bundle,
+/// regardless of whether its tree position is confirmed yet. Used by
+/// tree-scan recovery to locate the delegation's leaf.
+pub(crate) async fn load_bundle_gov_comm(
+    conn: &mut Connection,
+    round_id: &str,
+    wallet_id: &str,
+    bundle_index: u32,
+) -> Result<Option<pallas::Base>, VotingError> {
+    let commitment = conn
+        .query_row(
+            "SELECT gov_comm FROM voting_bundles
+             WHERE round_id = :round_id
+               AND wallet_id = :wallet_id
+               AND bundle_index = :bundle_index",
+            named_params! {
+                ":round_id": round_id,
+                ":wallet_id": wallet_id,
+                ":bundle_index": bundle_index as i64,
+            },
+            |row| row.get::<_, Option<Vec<u8>>>(0),
+        )
+        .await
+        .optional()
+        .map_err(|e| VotingError::Internal {
+            message: format!("failed to load bundle gov_comm: {e}"),
+        })?;
+    match commitment {
+        Some(Some(bytes)) => Ok(Some(field_from_bytes(
+            &bytes,
+            "bundle VAN commitment",
+        )?)),
+        _ => Ok(None),
+    }
+}
+
 // --- Delegation proof result fields ---
 
 fn require_matching_stored_field(

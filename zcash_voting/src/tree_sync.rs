@@ -8,6 +8,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
+use pasta_curves::pallas;
 use vote_commitment_tree::{MerklePath, TreeClient, TreeSyncApi};
 use vote_commitment_tree_client::http_sync_api::HttpTreeSyncApi;
 
@@ -577,4 +578,89 @@ impl VoteTreeSync {
         }
         Ok(())
     }
+}
+
+/// Default page budget for a recovery leaf scan.
+const DEFAULT_SCAN_PAGES: usize = 256;
+
+/// Searches the commitment-tree pages for a target leaf value (a VAN or VC
+/// commitment) and returns its global leaf position, without persisting
+/// anything. Used to recover on-chain evidence when the tx hash is unknown
+/// (e.g. the chain spent the nullifier but the broadcast response was lost).
+///
+/// Mirrors [`TreeClient`]'s pagination rules: pages advance via
+/// `next_from_height`, zero means the range is complete, and a page budget
+/// guards against a broken server looping forever.
+pub async fn find_leaf_position(
+    node_url: &str,
+    round_id: &str,
+    target: pallas::Base,
+) -> Result<Option<u64>, VotingError> {
+    let transport = Arc::new(HyperTransport::new());
+    let api = HttpTreeSyncApi::new(node_url, round_id, transport);
+    find_leaf_position_with_api(&api, target, DEFAULT_SCAN_PAGES).await
+}
+
+/// [`find_leaf_position`] against an injected API (host wallets' tests use
+/// the in-memory tree server).
+pub async fn find_leaf_position_with_api<A: TreeSyncApi>(
+    api: &A,
+    target: pallas::Base,
+    max_pages: usize,
+) -> Result<Option<u64>, VotingError> {
+    let state = api.get_tree_state().await.map_err(|e| VotingError::Internal {
+        message: format!("failed to fetch tree state: {e:?}"),
+    })?;
+    if state.next_index == 0 {
+        return Ok(None);
+    }
+    let to_height = state.height;
+    let mut page_from = 0u32;
+    for _ in 1..=max_pages {
+        let page = api
+            .get_block_commitments(page_from, to_height)
+            .await
+            .map_err(|e| VotingError::Internal {
+                message: format!("failed to fetch commitment tree page: {e:?}"),
+            })?;
+        for block in &page.blocks {
+            for (i, leaf) in block.leaves.iter().enumerate() {
+                if leaf.inner() == target {
+                    return Ok(Some(block.start_index + i as u64));
+                }
+            }
+        }
+        if page.next_from_height == 0 {
+            return Ok(None); // range complete, target not present
+        }
+        if page.next_from_height <= page_from || page.next_from_height > to_height {
+            return Err(VotingError::Internal {
+                message: format!(
+                    "commitment tree server returned invalid pagination: next {next}, current {current}, tip {tip}",
+                    next = page.next_from_height,
+                    current = page_from,
+                    tip = to_height
+                ),
+            });
+        }
+        page_from = page.next_from_height;
+    }
+    Err(VotingError::Internal {
+        message: format!(
+            "commitment tree scan exceeded the page limit of {max_pages} without completing the range"
+        ),
+    })
+}
+
+/// Returns the delegation VAN commitment (`gov_comm`) for a bundle, or `None`
+/// when the bundle is missing or its commitment was never persisted. Used by
+/// tree-scan recovery to locate the delegation's commitment-tree leaf.
+pub async fn delegation_van_commitment(
+    db: &VotingDb,
+    round_id: &str,
+    bundle_index: u32,
+) -> Result<Option<pallas::Base>, VotingError> {
+    let mut conn = db.conn().await?;
+    let wallet_id = db.wallet_id();
+    queries::load_bundle_gov_comm(&mut conn, round_id, &wallet_id, bundle_index).await
 }
