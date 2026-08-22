@@ -182,9 +182,14 @@ pub async fn update_round_phase(
     Ok(())
 }
 
-/// Advance a round phase without allowing regressions.
+/// Advance a round phase monotonically.
 ///
-/// Re-applying the current phase is treated as idempotent.
+/// Re-applying the current phase is idempotent. A round that is already past
+/// the requested milestone is left untouched: the counter is a forward-only
+/// progress marker, and per-bundle progression legitimately records an
+/// earlier milestone after a later one (e.g. re-proving a bundle's
+/// delegation after another bundle's votes advanced the round to
+/// `VoteReady`). Being ahead is not an inconsistency.
 pub async fn advance_round_phase(
     conn: &mut Connection,
     round_id: &str,
@@ -224,13 +229,9 @@ pub async fn advance_round_phase(
                 "failed to advance round phase for {round_id}: current={current_rank}, requested={requested_rank}"
             ),
         })
-    } else if current_rank > requested_rank {
-        Err(VotingError::InvalidInput {
-            message: format!(
-                "refusing to regress round phase for {round_id}: current={current_rank}, requested={requested_rank}"
-            ),
-        })
     } else {
+        // current == requested: already applied (idempotent).
+        // current > requested: the round is past this milestone — a no-op.
         Ok(())
     }
 }

@@ -2087,18 +2087,21 @@ mod tests {
     }
 
     #[test]
-    fn test_advance_round_phase_rejects_regression() {
+    fn test_advance_round_phase_is_noop_when_past() {
         let db = test_db();
         db.init_round(Network::Testnet, &test_params(), None)
             .unwrap();
 
         db.advance_round_phase(ROUND_ID, RoundPhase::DelegationConstructed)
             .unwrap();
-        let err = db
-            .advance_round_phase(ROUND_ID, RoundPhase::HotkeyGenerated)
-            .expect_err("regression should fail");
+        // A round already past the requested milestone is left untouched:
+        // per-bundle progression may record an earlier milestone after a
+        // later one.
+        db.advance_round_phase(ROUND_ID, RoundPhase::HotkeyGenerated)
+            .expect("a round past the milestone must be a no-op");
 
-        assert!(err.to_string().contains("refusing to regress round phase"));
+        let state = db.get_round_state(ROUND_ID).unwrap();
+        assert_eq!(state.phase, RoundPhase::DelegationConstructed);
     }
 
     #[test]
